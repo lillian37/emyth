@@ -48,3 +48,33 @@
 
 # keep jsch (jsch 用反射加载 jce.* 加密类，R8 会误裁，必须保留，否则 ssh 工具报 ClassNotFoundException)
 -keep class com.jcraft.jsch.** { *; }
+
+# JSch optional desktop integrations are not used by the Android SSH path:
+# Windows Pageant/JNA, Log4j2, Kerberos/JGSS and junixsocket.
+# Suppress only the missing optional types; keep the SSH reflection rules above.
+-dontwarn com.sun.jna.Memory
+-dontwarn com.sun.jna.Pointer
+-dontwarn com.sun.jna.platform.win32.BaseTSD$ULONG_PTR
+-dontwarn com.sun.jna.platform.win32.Kernel32
+-dontwarn com.sun.jna.platform.win32.User32
+-dontwarn com.sun.jna.platform.win32.WinBase
+-dontwarn com.sun.jna.platform.win32.WinBase$SECURITY_ATTRIBUTES
+-dontwarn com.sun.jna.platform.win32.WinDef$HWND
+-dontwarn com.sun.jna.platform.win32.WinDef$LPARAM
+-dontwarn com.sun.jna.platform.win32.WinDef$LRESULT
+-dontwarn com.sun.jna.platform.win32.WinDef$WPARAM
+-dontwarn com.sun.jna.platform.win32.WinNT$HANDLE
+-dontwarn com.sun.jna.platform.win32.WinUser$COPYDATASTRUCT
+-dontwarn org.apache.logging.log4j.Level
+-dontwarn org.apache.logging.log4j.LogManager
+-dontwarn org.apache.logging.log4j.Logger
+-dontwarn org.ietf.jgss.GSSContext
+-dontwarn org.ietf.jgss.GSSCredential
+-dontwarn org.ietf.jgss.GSSException
+-dontwarn org.ietf.jgss.GSSManager
+-dontwarn org.ietf.jgss.GSSName
+-dontwarn org.ietf.jgss.MessageProp
+-dontwarn org.ietf.jgss.Oid
+-dontwarn org.newsclub.net.unix.AFUNIXServerSocketChannel
+-dontwarn org.newsclub.net.unix.AFUNIXSocketAddress
+-dontwarn org.newsclub.net.unix.AFUNIXSocketChannel
