@@ -51,7 +51,14 @@ jobs:
       - name: Test and build optimized APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:testPerformanceUnitTest :app:assemblePerformance --no-daemon --max-workers=2
+          ./gradlew :app:tasks --all --console=plain > "$RUNNER_TEMP/emyth-app-tasks.txt"
+          emyth_test_task="$(awk '$1 ~ /^test(Debug|Performance)(Unit|Host)Test$/ { print $1; exit }' "$RUNNER_TEMP/emyth-app-tasks.txt")"
+          if [ -z "$emyth_test_task" ]; then
+            cat "$RUNNER_TEMP/emyth-app-tasks.txt"
+            exit 1
+          fi
+          echo "Running app tests: $emyth_test_task"
+          ./gradlew ":app:$emyth_test_task" :app:assemblePerformance --no-daemon --max-workers=2
 
       - name: Verify test package and optimization outputs
         run: |
