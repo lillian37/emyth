@@ -51,14 +51,7 @@ jobs:
       - name: Test and build optimized APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:tasks --all --console=plain > "$RUNNER_TEMP/emyth-app-tasks.txt"
-          emyth_test_task="$(awk '$1 ~ /^test(Debug|Performance)(Unit|Host)Test$/ { print $1; exit }' "$RUNNER_TEMP/emyth-app-tasks.txt")"
-          if [ -z "$emyth_test_task" ]; then
-            cat "$RUNNER_TEMP/emyth-app-tasks.txt"
-            exit 1
-          fi
-          echo "Running app tests: $emyth_test_task"
-          ./gradlew ":app:$emyth_test_task" :app:assemblePerformance --no-daemon --max-workers=2
+          ./gradlew :app:testDebugUnitTest :app:assemblePerformance --no-daemon --max-workers=2
 
       - name: Verify test package and optimization outputs
         run: |
@@ -77,6 +70,17 @@ jobs:
             app/build/outputs/apk/performance/app-arm64-v8a-performance.apk
             app/build/outputs/apk/performance/app-arm64-v8a-performance.apk.sha256
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emyth-unit-test-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload R8 mapping
