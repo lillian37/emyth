@@ -71,6 +71,7 @@ import dev.emyth.app.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import dev.emyth.app.data.datastore.ProactiveMessageSetting
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.datastore.scheduledWakePrompt
 import dev.emyth.app.data.event.AppEvent
 import dev.emyth.app.data.event.AppEventBus
 import dev.emyth.app.data.datastore.findProvider
@@ -426,6 +427,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         const val EXTRA_DEVICE_EVENT_CONTEXT = "device_event_context"
         // 计划唤醒（schedule_wake 工具设置的定点唤醒）触发时携带的备注
         const val EXTRA_SCHEDULED_WAKE_NOTE = "scheduled_wake_note"
+        const val EXTRA_SCHEDULED_WAKE_PROMPT = "scheduled_wake_prompt"
 
         // 保护 last_triggered_time 的 check-then-act 竞态（防止 AlarmManager 与 WorkManager
         // 前后脚触发导致"最小间隔"被砍半）。纯同步 SharedPreferences 读写，无挂起点，用对象锁即可。
@@ -460,6 +462,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
         val isFromDeviceEvent = deviceEventContext != null
         val wakeNote = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_NOTE)
+        val wakePrompt = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_PROMPT)
         val isScheduledWake = wakeNote != null
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
@@ -609,7 +612,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     parts = listOf(UIMessagePart.Text(
                         when {
                             isFromDeviceEvent -> "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
-                            isScheduledWake -> "这是你之前主动设置的定时唤醒。请务必根据唤醒备注，主动给用户发一条自然、关心的消息。不要回复 [PASS]，你设这个唤醒就是为了在这个时刻找用户。"
+                            isScheduledWake -> scheduledWakePrompt(wakePrompt)
                             else -> "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
                         }
                     ))

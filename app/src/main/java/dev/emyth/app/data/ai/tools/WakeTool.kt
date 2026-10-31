@@ -9,6 +9,8 @@ package dev.emyth.app.data.ai.tools
 import android.content.Context
 import dev.emyth.app.data.datastore.SettingsStore
 import dev.emyth.app.data.datastore.WakeRepeat
+import dev.emyth.app.data.datastore.effectivePrompt
+import dev.emyth.app.data.datastore.isPending
 import dev.emyth.app.data.datastore.rescheduled
 import dev.emyth.app.data.service.ScheduledWakeScheduler
 import kotlinx.coroutines.CancellationException
@@ -96,7 +98,7 @@ fun createScheduleWakeTool(context: Context): Tool = Tool(
 
 fun createListWakesTool(context: Context): Tool = Tool(
     name = "list_wakes",
-    description = "列出自主唤醒计划，包括一次性或每日重复、每日触发时刻、下次触发时间和备注。",
+    description = "列出自主唤醒计划，包括重复方式、每日时刻、下次时间、AI 备注和用户编辑的唤醒提示词。",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = { _ ->
         try {
@@ -114,8 +116,9 @@ fun createListWakesTool(context: Context): Tool = Tool(
                         wake.time?.let { put("time", it) }
                         put("time_zone", zone.id)
                         put("note", wake.note)
-                        put("pending", wake.repeat == WakeRepeat.DAILY ||
-                            (wake.lastTriggeredAtMillis == 0L && wake.triggerAtMillis > now))
+                        put("wake_prompt", wake.effectivePrompt)
+                        put("prompt_customized", !wake.prompt.isNullOrBlank())
+                        put("pending", wake.isPending(now))
                         if (wake.lastTriggeredAtMillis > 0L) put("last_triggered_at", wake.lastTriggeredAtMillis)
                     })
                 }

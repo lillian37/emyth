@@ -30,6 +30,9 @@ class ScheduledWakeReceiver : BroadcastReceiver() {
                     appContext.startForegroundService(
                         Intent(appContext, ProactiveMessageTriggerService::class.java).apply {
                             putExtra(ProactiveMessageTriggerService.EXTRA_SCHEDULED_WAKE_NOTE, wake.note)
+                            wake.prompt?.let {
+                                putExtra(ProactiveMessageTriggerService.EXTRA_SCHEDULED_WAKE_PROMPT, it)
+                            }
                         }
                     )
                 } else {

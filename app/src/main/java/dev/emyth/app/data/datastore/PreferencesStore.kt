@@ -545,6 +545,16 @@ class SettingsStore(
         return updated
     }
 
+    suspend fun updateWakePrompt(id: String, prompt: String?): Boolean {
+        var found = false
+        updateWakeSetting { current ->
+            val now = System.currentTimeMillis()
+            found = current.scheduledWakes.any { it.id == id && it.isPending(now) }
+            current.withWakePrompt(id, prompt, now)
+        }
+        return found
+    }
+
     suspend fun incrementLaunchCount(): Int {
         var count = 0
         // Update only this field: a cold-start receiver may be advancing a wake at the same time.

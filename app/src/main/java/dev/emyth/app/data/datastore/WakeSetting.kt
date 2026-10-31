@@ -12,6 +12,10 @@ import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
 
+const val DEFAULT_SCHEDULED_WAKE_PROMPT =
+    "这是你之前主动设置的定时唤醒。请务必根据唤醒备注，主动给用户发一条自然、关心的消息。" +
+        "不要回复 [PASS]，你设这个唤醒就是为了在这个时刻找用户。"
+
 @Serializable
 enum class WakeRepeat(val value: String) {
     @SerialName("once")
@@ -30,12 +34,29 @@ data class ScheduledWake(
     val time: String? = null,
     val lastTriggeredAtMillis: Long = 0,
     val lastTriggeredDate: String? = null,
+    val prompt: String? = null,
 )
 
 @Serializable
 data class WakeSetting(
     val scheduledWakes: List<ScheduledWake> = emptyList(),
 )
+
+internal fun scheduledWakePrompt(customPrompt: String?): String =
+    customPrompt?.takeIf { it.isNotBlank() } ?: DEFAULT_SCHEDULED_WAKE_PROMPT
+
+internal val ScheduledWake.effectivePrompt: String
+    get() = scheduledWakePrompt(prompt)
+
+internal fun ScheduledWake.isPending(nowMillis: Long): Boolean =
+    repeat == WakeRepeat.DAILY || (lastTriggeredAtMillis == 0L && triggerAtMillis > nowMillis)
+
+internal fun WakeSetting.withWakePrompt(id: String, prompt: String?, nowMillis: Long): WakeSetting {
+    require(prompt == null || prompt.isNotBlank()) { "唤醒提示词不能为空，可以恢复默认提示词" }
+    return copy(scheduledWakes = scheduledWakes.map { wake ->
+        if (wake.id == id && wake.isPending(nowMillis)) wake.copy(prompt = prompt) else wake
+    })
+}
 
 internal fun parseDailyWakeTime(value: String): LocalTime {
     require(Regex("(?:[01][0-9]|2[0-3]):[0-5][0-9]").matches(value)) {
