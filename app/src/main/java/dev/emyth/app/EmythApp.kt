@@ -39,6 +39,7 @@ import dev.emyth.app.data.service.DailySummaryService
 import dev.emyth.app.data.service.DeviceEventAiTriggerService
 import dev.emyth.app.data.service.DeviceEventTrackingService
 import dev.emyth.app.data.service.ProactiveMessageService
+import dev.emyth.app.data.service.ScheduledWakeScheduler
 import dev.emyth.app.data.service.SupabaseSyncService
 import dev.emyth.app.service.ChatService
 import dev.emyth.app.service.WebServerService
@@ -114,6 +115,9 @@ class EmythApp : Application() {
         // Reschedule proactive message alarm if enabled
         rescheduleProactiveMessageIfEnabled()
 
+        // Restore tool-created wakes independently of the random proactive-message switch.
+        rescheduleScheduledWakes()
+
         // Reschedule Supabase sync alarm if enabled
         rescheduleSupabaseSyncIfEnabled()
 
@@ -148,9 +152,7 @@ class EmythApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val store = get<SettingsStore>()
-                val current = store.settingsFlowRaw.first()
-                store.update(current.copy(launchCount = current.launchCount + 1))
-                Log.i(TAG, "incrementLaunchCount: ${store.settingsFlowRaw.first().launchCount}")
+                Log.i(TAG, "incrementLaunchCount: ${store.incrementLaunchCount()}")
             }.onFailure {
                 Log.e(TAG, "incrementLaunchCount failed", it)
             }
@@ -173,6 +175,14 @@ class EmythApp : Application() {
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }
+        }
+    }
+
+    private fun rescheduleScheduledWakes() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                ScheduledWakeScheduler(this@EmythApp, get<SettingsStore>()).restore()
+            }.onFailure { Log.e(TAG, "Failed to restore scheduled wakes", it) }
         }
     }
 

@@ -19,6 +19,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.serialization.SerialName
@@ -523,6 +524,35 @@ class SettingsStore(
 
     suspend fun update(fn: (Settings) -> Settings) {
         update(fn(settingsFlow.value))
+    }
+
+    suspend fun updateWakeSetting(transform: (WakeSetting) -> WakeSetting): WakeSetting {
+        var updated = WakeSetting()
+        dataStore.edit { preferences ->
+            val current = preferences[WAKES_SETTING]?.let {
+                JsonInstant.decodeFromString<WakeSetting>(it)
+            } ?: WakeSetting()
+            updated = transform(current)
+            if (updated != current) {
+                preferences[WAKES_SETTING] = JsonInstant.encodeToString(updated)
+            }
+        }
+        settingsFlow.value = if (settingsFlow.value.init) {
+            settingsFlowRaw.first()
+        } else {
+            settingsFlow.value.copy(wakeSetting = updated)
+        }
+        return updated
+    }
+
+    suspend fun incrementLaunchCount(): Int {
+        var count = 0
+        // Update only this field: a cold-start receiver may be advancing a wake at the same time.
+        dataStore.edit { preferences ->
+            count = (preferences[LAUNCH_COUNT] ?: 0) + 1
+            preferences[LAUNCH_COUNT] = count
+        }
+        return count
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
