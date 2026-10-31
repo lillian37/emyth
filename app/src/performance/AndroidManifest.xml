@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:tools="http://schemas.android.com/tools">
   <application
-    android:label="Emyth 性能测试"
+    android:label="Emyth"
     tools:replace="android:label" />
 </manifest>
