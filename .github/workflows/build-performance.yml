@@ -26,14 +26,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
-          log-accepted-android-sdk-licenses: 'false'
-
-      - name: Install Android build packages
-        run: sdkmanager 'platforms;android-37' 'build-tools;36.0.0'
+      - name: Inspect preinstalled Android SDK
+        run: ls "$ANDROID_HOME/platforms"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
