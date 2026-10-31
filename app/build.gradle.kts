@@ -133,6 +133,17 @@ android {
             buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
             buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
         }
+        create("performance") {
+            initWith(getByName("release"))
+            matchingFallbacks.add("release")
+            // Test-only package with release optimizations and the project's shared test signing key.
+            applicationIdSuffix = ".perf"
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isProfileable = true
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
