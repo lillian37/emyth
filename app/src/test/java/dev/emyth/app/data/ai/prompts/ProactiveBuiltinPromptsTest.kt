@@ -1,7 +1,12 @@
 package dev.emyth.app.data.ai.prompts
 
 import dev.emyth.app.data.datastore.BuiltinPromptSetting
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProactiveBuiltinPromptsTest {
@@ -153,16 +158,56 @@ class ProactiveBuiltinPromptsTest {
         val expected = "动态上下文\n\n[计划唤醒] 这是你之前设置的定时唤醒，唤醒备注：$note。" +
             "请据此决定是否主动给用户发消息，或调用工具。"
         assertEquals(expected, actual)
+        assertFalse(actual.contains("[当前计划唤醒备注]"))
     }
 
     @Test
-    fun `empty notes and cleared note wrappers add nothing`() {
+    fun `empty notes add nothing even when an instruction override exists`() {
         val defaults = BuiltinPromptSetting()
+        val custom = BuiltinPromptSetting(mapOf(ProactiveBuiltinPrompts.scheduledNote.id to "自定义说明"))
         listOf(null, "", " \n").forEach {
             assertEquals("动态上下文\n", defaults.proactiveScheduledContext("动态上下文\n", it))
+            assertEquals("动态上下文\n", custom.proactiveScheduledContext("动态上下文\n", it))
         }
+    }
+
+    @Test
+    fun `clearing the explanation retains the current note as data without restoring instructions`() {
         val cleared = BuiltinPromptSetting(mapOf(ProactiveBuiltinPrompts.scheduledNote.id to ""))
-        assertEquals("动态上下文\n", cleared.proactiveScheduledContext("动态上下文\n", "有效备注"))
+        val actual = cleared.proactiveScheduledContext("动态上下文\n", "新版有效备注")
+        assertTrue(actual.startsWith("动态上下文\n\n[当前计划唤醒备注]\n"))
+        assertEquals("新版有效备注", dataNote(actual))
+        assertFalse(actual.contains("请据此决定"))
+        assertFalse(actual.contains("这是你之前设置"))
+    }
+
+    @Test
+    fun `an explanation without the note variable retains both the custom text and current data`() {
+        val setting = BuiltinPromptSetting(mapOf(
+            ProactiveBuiltinPrompts.scheduledNote.id to "按自己的想法处理。",
+        ))
+        val actual = setting.proactiveScheduledContext("数据", "新版任务")
+        assertTrue(actual.startsWith("数据\n按自己的想法处理。\n[当前计划唤醒备注]\n"))
+        assertEquals("新版任务", dataNote(actual))
+        assertFalse(actual.contains("请据此决定"))
+    }
+
+    @Test
+    fun `JSON data preserves Chinese newlines quotes braces and literal variable text`() {
+        val note = "中文第一行\n第二行 \"引号\" 与反斜杠 \\ {{note}} {\"key\":\"value\"}\t😀"
+        val setting = BuiltinPromptSetting(mapOf(ProactiveBuiltinPrompts.scheduledNote.id to ""))
+        val actual = setting.proactiveScheduledContext("数据", note)
+        assertEquals(note, dataNote(actual))
+    }
+
+    @Test
+    fun `only the exact declared note variable replaces the separate data block`() {
+        listOf("已经提到新版备注", "{{ note }}", "{{other}}").forEach { template ->
+            val setting = BuiltinPromptSetting(mapOf(ProactiveBuiltinPrompts.scheduledNote.id to template))
+            val actual = setting.proactiveScheduledContext("数据", "新版备注")
+            assertTrue(actual.contains("\n$template\n[当前计划唤醒备注]\n"))
+            assertEquals("新版备注", dataNote(actual))
+        }
     }
 
     @Test
@@ -172,4 +217,8 @@ class ProactiveBuiltinPromptsTest {
         ))
         assertEquals("数据\n计划备注：喝水", setting.proactiveScheduledContext("数据", "喝水"))
     }
+
+    private fun dataNote(context: String): String =
+        Json.parseToJsonElement(context.substringAfter("[当前计划唤醒备注]\n"))
+            .jsonObject.getValue("note").jsonPrimitive.content
 }

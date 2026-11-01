@@ -7,6 +7,8 @@
 package dev.emyth.app.data.ai.prompts
 
 import dev.emyth.app.data.datastore.BuiltinPromptSetting
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 object ProactiveBuiltinPrompts {
     val contextRules = BuiltinPromptDefinition(
@@ -106,7 +108,7 @@ object ProactiveBuiltinPrompts {
         id = "proactive.scheduled_note",
         title = "计划唤醒备注说明",
         group = "主动消息与设备事件",
-        description = "{{note}} 替换当前计划的唤醒备注；留空不附加此段。",
+        description = "{{note}} 替换当前计划备注；备注始终传递，留空只移除附加说明。",
         defaultText = "[计划唤醒] 这是你之前设置的定时唤醒，唤醒备注：{{note}}。请据此决定是否主动给用户发消息，或调用工具。",
         variables = setOf("note"),
     )
@@ -139,6 +141,19 @@ internal fun BuiltinPromptSetting.proactiveDeviceContext(data: String): String =
 
 internal fun BuiltinPromptSetting.proactiveScheduledContext(base: String, note: String?): String {
     if (note.isNullOrBlank()) return base
-    val rendered = text(ProactiveBuiltinPrompts.scheduledNote, mapOf("note" to note))
-    return if (rendered.isBlank()) base else "$base\n$rendered"
+    val definition = ProactiveBuiltinPrompts.scheduledNote
+    val template = overrides[definition.id] ?: definition.defaultText
+    val rendered = text(definition, mapOf("note" to note))
+    if ("{{note}}" in template && rendered.isNotBlank()) return "$base\n$rendered"
+
+    return buildString {
+        append(base)
+        if (rendered.isNotBlank()) {
+            appendLine()
+            append(rendered)
+        }
+        appendLine()
+        appendLine("[当前计划唤醒备注]")
+        append(buildJsonObject { put("note", note) })
+    }
 }
