@@ -40,6 +40,7 @@ import dev.emyth.app.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import dev.emyth.app.data.ai.prompts.DEFAULT_TITLE_PROMPT
 import dev.emyth.app.data.ai.prompts.DEFAULT_TRANSLATION_PROMPT
 import dev.emyth.app.data.ai.prompts.LEARNING_MODE_PROMPT
+import dev.emyth.app.data.ai.prompts.BUILTIN_PROMPTS
 import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.data.model.Avatar
 import dev.emyth.app.data.model.ExternalMemory
@@ -151,6 +152,7 @@ class SettingsStore(
         val MODE_INJECTIONS = stringPreferencesKey("mode_injections")
         val LOREBOOKS = stringPreferencesKey("lorebooks")
         val QUICK_MESSAGES = stringPreferencesKey("quick_messages")
+        val BUILTIN_PROMPT_SETTING = stringPreferencesKey("builtin_prompt_setting")
 
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
@@ -313,6 +315,9 @@ class SettingsStore(
                 wakeSetting = preferences[WAKES_SETTING]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: WakeSetting(),
+                builtinPromptSetting = preferences[BUILTIN_PROMPT_SETTING]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: BuiltinPromptSetting(),
                 voiceCallSetting = preferences[VOICE_CALL_SETTING]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: VoiceCallSetting(),
@@ -510,6 +515,7 @@ class SettingsStore(
             preferences[ALLOW_ASSISTANT_DELETE] = settings.allowAssistantDelete
             preferences[TASK_SETTING] = JsonInstant.encodeToString(settings.taskSetting)
             preferences[WAKES_SETTING] = JsonInstant.encodeToString(settings.wakeSetting)
+            preferences[BUILTIN_PROMPT_SETTING] = JsonInstant.encodeToString(settings.builtinPromptSetting)
             preferences[VOICE_CALL_SETTING] = JsonInstant.encodeToString(settings.voiceCallSetting)
             preferences[WECHAT_BOT_SETTING] = JsonInstant.encodeToString(settings.wechatBotSetting)
             preferences[QQ_BOT_SETTING] = JsonInstant.encodeToString(settings.qqBotSetting)
@@ -553,6 +559,35 @@ class SettingsStore(
             current.withWakePrompt(id, prompt, now)
         }
         return found
+    }
+
+    suspend fun updateWakeContent(id: String, note: String, prompt: String?): Boolean {
+        var found = false
+        updateWakeSetting { current ->
+            val now = System.currentTimeMillis()
+            found = current.scheduledWakes.any { it.id == id && it.isPending(now) }
+            current.withWakeContent(id, note, prompt, now)
+        }
+        return found
+    }
+
+    suspend fun updateBuiltinPrompt(id: String, text: String?) {
+        require(BUILTIN_PROMPTS.any { it.id == id }) { "未知的内置提示词" }
+        var updated = BuiltinPromptSetting()
+        dataStore.edit { preferences ->
+            val current = preferences[BUILTIN_PROMPT_SETTING]?.let {
+                JsonInstant.decodeFromString<BuiltinPromptSetting>(it)
+            } ?: BuiltinPromptSetting()
+            updated = current.withOverride(id, text)
+            if (updated != current) {
+                preferences[BUILTIN_PROMPT_SETTING] = JsonInstant.encodeToString(updated)
+            }
+        }
+        settingsFlow.value = if (settingsFlow.value.init) {
+            settingsFlowRaw.first()
+        } else {
+            settingsFlow.value.copy(builtinPromptSetting = updated)
+        }
     }
 
     suspend fun incrementLaunchCount(): Int {
@@ -695,6 +730,7 @@ data class Settings(
     val allowAssistantDelete: Boolean = false,
     val taskSetting: TaskSetting = TaskSetting(),
     val wakeSetting: WakeSetting = WakeSetting(),
+    val builtinPromptSetting: BuiltinPromptSetting = BuiltinPromptSetting(),
     val voiceCallSetting: VoiceCallSetting = VoiceCallSetting(),
     val wechatBotSetting: WechatBotSetting = WechatBotSetting(),
     val qqBotSetting: QqBotSetting = QqBotSetting(),

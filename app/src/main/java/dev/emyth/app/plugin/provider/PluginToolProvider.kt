@@ -14,7 +14,9 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import dev.emyth.app.data.ai.prompts.ChatBuiltinPrompts
 import dev.emyth.app.data.ai.tools.ToolNaming
+import dev.emyth.app.data.datastore.BuiltinPromptSetting
 import dev.emyth.app.plugin.loader.LoadedPlugin
 import dev.emyth.app.plugin.loader.PluginLoader
 import dev.emyth.app.plugin.manager.PluginManager
@@ -148,11 +150,10 @@ class PluginToolProvider(
     /**
      * 获取插件的提示词注入
      *
-     * 第一个元素: 自动生成的"插件能力总览"(当存在声明了工具的插件时),
-     *             让模型不仅"看见"插件工具, 还被明确提醒要主动使用.
+     * 第一个元素: 可编辑的插件能力总览（存在声明工具的插件且文本非空时）。
      * 后续元素: 各插件 manifest.promptTemplate 中开启了 inject_as_prompt 的模板(保留原机制).
      */
-    suspend fun getPluginPromptInjections(): List<String> {
+    suspend fun getPluginPromptInjections(builtinPromptSetting: BuiltinPromptSetting): List<String> {
         // 等待插件初始化完成，避免竞态条件
         pluginManager.awaitInitialization()
 
@@ -165,9 +166,10 @@ class PluginToolProvider(
         // 在这里重复列一遍是纯粹的体积浪费。
         val overview = if (pluginsWithTools.isNotEmpty()) {
             val pluginNames = pluginsWithTools.joinToString("、") { it.info.manifest.name }
-            "你当前装载了以下插件提供的工具（完整工具列表和参数见 tools 定义）：${pluginNames}。" +
-                "不要只在用户明确点名某个工具时才使用——只要对话场景与某个工具的用途相关，就应该主动考虑调用它，而不是被动等待用户指示。" +
-                "部分工具绑定的是持续性的人设/系统状态（例如经营、社交、记录类），更需要你自己记得在合适的时机调用，而不是等用户提醒。"
+            builtinPromptSetting.text(
+                ChatBuiltinPrompts.pluginOverview,
+                mapOf("plugin_names" to pluginNames),
+            ).takeIf { it.isNotBlank() }
         } else {
             null
         }

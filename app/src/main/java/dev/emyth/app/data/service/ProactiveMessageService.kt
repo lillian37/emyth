@@ -41,6 +41,11 @@ import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
+import dev.emyth.app.data.ai.prompts.ProactiveBuiltinPrompts
+import dev.emyth.app.data.ai.prompts.appendProactivePrompt
+import dev.emyth.app.data.ai.prompts.proactiveDeviceContext
+import dev.emyth.app.data.ai.prompts.proactiveScheduledContext
+import dev.emyth.app.data.ai.prompts.proactiveUserText
 import dev.emyth.app.data.ai.transformers.InputMessageTransformer
 import dev.emyth.app.data.ai.transformers.OutputMessageTransformer
 import dev.emyth.app.data.ai.transformers.TemplateTransformer
@@ -332,20 +337,10 @@ class ProactiveMessageService : KoinComponent {
 
         // 健康状态（Gadgetbridge）- 跳过，AI可通过工具自行查询
 
-        sb.appendLine()
-        sb.appendLine("请根据以上上下文，以自然、关心、有趣的方式主动给用户发一条消息。")
-        sb.appendLine()
-        sb.appendLine("重要规则：")
-        sb.appendLine("- 绝对不要复述上一轮的对话内容，要发新的话题或新的关心")
-        sb.appendLine("- 如果上一轮已经说过类似的话，这次换一个完全不同的角度")
-        sb.appendLine("- 不要提及你是在定时发消息，要像自然想起对方一样")
-        sb.appendLine("- 绝对不要提及任何数据来源、工具使用、传感器数据、位置服务、应用使用统计等技术细节")
-        sb.appendLine("- 不要说\"根据xxx\"、\"我注意到xxx数据\"之类暴露信息来源的话")
-        sb.appendLine("- 直接以朋友聊天的语气开口，就像你突然想到了什么想跟对方说")
-        sb.appendLine("- 不要使用任何XML标签、思考标记或特殊格式，只输出纯文本的消息内容")
-        sb.appendLine("- 这是主动发消息：上一轮对话已经彻底结束，不要复盘上一轮，不要纠结该不该说话")
-        sb.appendLine("- 你唯一要做的是：先调用查岗工具（屏幕使用时长、今日通知、当前前台应用），看用户此刻在干什么，然后据此主动发一条全新的、自然的消息")
-        sb.appendLine("- 不要输出思考过程、推理过程或内部独白，只输出你想对用户说的话")
+        sb.appendProactivePrompt(
+            settings.builtinPromptSetting.text(ProactiveBuiltinPrompts.contextRules),
+            blankLinesBefore = 1,
+        )
         return sb.toString()
     }
 
@@ -582,13 +577,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 如果有设备事件上下文（激进模式），使用它替代常规上下文；否则使用常规上下文
                 val contextStr = if (isFromDeviceEvent && deviceEventContext != null) {
-                    deviceEventContext
+                    settings.builtinPromptSetting.proactiveDeviceContext(deviceEventContext)
                 } else {
                     val base = proactiveMessageService.buildProactiveContext(
                         this@ProactiveMessageTriggerService, settings
                     )
-                    if (isScheduledWake && !wakeNote.isNullOrBlank()) {
-                        base + "\n[计划唤醒] 这是你之前设置的定时唤醒，唤醒备注：$wakeNote。请据此决定是否主动给用户发消息，或调用工具。"
+                    if (isScheduledWake) {
+                        settings.builtinPromptSetting.proactiveScheduledContext(base, wakeNote)
                     } else {
                         base
                     }
@@ -604,16 +599,23 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
 
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
-                val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, if (isFromDeviceEvent) deviceEventContext else contextStr)
+                val systemPrompt = buildSystemPrompt(
+                    assistant = assistant,
+                    settings = settings,
+                    idleMinutes = idleMinutes,
+                    jumpThreshold = proactiveSetting.jumpIdleThresholdMinutes,
+                    isFromDeviceEvent = isFromDeviceEvent,
+                    deviceEventContext = contextStr,
+                )
 
                 // user message 只放简短指令（上下文已在系统提示词中）
                 val userMessage = UIMessage(
                     role = MessageRole.USER,
                     parts = listOf(UIMessagePart.Text(
                         when {
-                            isFromDeviceEvent -> "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
+                            isFromDeviceEvent -> settings.builtinPromptSetting.proactiveUserText(true)
                             isScheduledWake -> scheduledWakePrompt(wakePrompt)
-                            else -> "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
+                            else -> settings.builtinPromptSetting.proactiveUserText(false)
                         }
                     ))
                 )
@@ -914,15 +916,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             if (isFromDeviceEvent) {
                 // 激进模式设备事件触发的专用提示词 + 设备事件上下文（放在最后面，网关追加内容之后模型最后看到的就是这个）
-                appendLine()
-                appendLine()
-                appendLine("## ⚠️ 当前触发原因：用户手机动向（设备事件触发）")
-                appendLine("你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。")
-                appendLine("请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。")
-                appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
-                appendLine("请根据用户的动向，自然地决定是否主动发一条消息。距离用户上次回复已过去 $idleMinutes 分钟。")
-                appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
-                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+                appendProactivePrompt(
+                    settings.builtinPromptSetting.text(
+                        ProactiveBuiltinPrompts.deviceTriggerRules,
+                        mapOf("idle_minutes" to idleMinutes.toString()),
+                    ),
+                    blankLinesBefore = 2,
+                )
                 // 直接注入设备事件上下文
                 if (!deviceEventContext.isNullOrBlank()) {
                     appendLine()
@@ -930,17 +930,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
             } else {
                 // 常规主动消息：上下文也注入系统提示词最后面（和激进模式一样）
-                appendLine()
-                appendLine()
-                appendLine("## 主动消息触发（定时触发）")
-                appendLine("距离用户上次回复已过去 $idleMinutes 分钟。")
-                appendLine("这是定时触发的主动消息，不是设备事件触发。")
-                appendLine("上一轮对话已经彻底结束，不要复盘上一轮，不要纠结该不该说话。")
-                appendLine("直接查岗看用户在干什么，然后主动发一条全新的、自然的消息。")
-                appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
-                appendLine("不要输出思考过程、推理过程或内部独白，只输出你想对用户说的话。")
-                appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
-                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+                appendProactivePrompt(
+                    settings.builtinPromptSetting.text(
+                        ProactiveBuiltinPrompts.timerTriggerRules,
+                        mapOf("idle_minutes" to idleMinutes.toString()),
+                    ),
+                    blankLinesBefore = 2,
+                )
                 // 注入完整上下文（定位、前台app、app使用、通知、电量、健康等）
                 if (!deviceEventContext.isNullOrBlank()) {
                     appendLine()

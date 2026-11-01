@@ -58,6 +58,18 @@ internal fun WakeSetting.withWakePrompt(id: String, prompt: String?, nowMillis: 
     })
 }
 
+internal fun WakeSetting.withWakeContent(
+    id: String,
+    note: String,
+    prompt: String?,
+    nowMillis: Long,
+): WakeSetting {
+    require(prompt == null || prompt.isNotBlank()) { "唤醒提示词不能为空，可以恢复默认提示词" }
+    return copy(scheduledWakes = scheduledWakes.map { wake ->
+        if (wake.id == id && wake.isPending(nowMillis)) wake.copy(note = note, prompt = prompt) else wake
+    })
+}
+
 internal fun parseDailyWakeTime(value: String): LocalTime {
     require(Regex("(?:[01][0-9]|2[0-3]):[0-5][0-9]").matches(value)) {
         "time 必须是 24 小时制 HH:mm，例如 00:00 或 08:30"

@@ -360,17 +360,7 @@ class DeviceEventAiTriggerService : Service() {
             }
             sb.appendLine("  - [$time] $desc")
         }
-        sb.appendLine()
-        sb.appendLine("请根据以上用户动向，以自然、关心、有趣的方式决定是否主动给用户发一条消息。")
-        sb.appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
-        sb.appendLine("重要规则：")
-        sb.appendLine("- 不要提及你是在因为设备事件发消息，要像自然想起对方一样")
-        sb.appendLine("- 绝对不要提及任何数据来源、工具使用、传感器数据、应用使用统计等技术细节")
-        sb.appendLine("- 不要说\"根据xxx\"、\"我注意到xxx数据\"之类暴露信息来源的话")
-        sb.appendLine("- 直接以朋友聊天的语气开口，就像你突然想到了什么想跟对方说")
-        sb.appendLine("- 不要使用任何XML标签、思考标记或特殊格式，只输出纯文本的消息内容")
-        sb.appendLine("- 不要调用任何工具或函数，只输出纯文本回复")
-        sb.appendLine("- 不要输出思考过程、推理过程或内部独白，只输出你想对用户说的话")
+        // 可编辑规则由触发服务使用同一次 Settings 快照附加，避免与系统规则混用不同版本。
         return sb.toString()
     }
 

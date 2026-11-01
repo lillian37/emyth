@@ -1030,7 +1030,7 @@ addAll(localTools.getTools(assistant.localTools, dev.emyth.app.data.ai.tools.Too
                     // Plugin tools
                     addAll(pluginToolProvider.getTools())
                 },
-                pluginPromptInjections = pluginToolProvider.getPluginPromptInjections(),
+                pluginPromptInjections = pluginToolProvider.getPluginPromptInjections(settings.builtinPromptSetting),
                 conversationId = conversationId.toString(),
             ).onCompletion {
                 // 取消 Live Update 通知

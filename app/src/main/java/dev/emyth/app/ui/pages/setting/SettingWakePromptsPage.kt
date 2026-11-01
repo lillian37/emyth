@@ -76,35 +76,37 @@ fun SettingWakePromptsPage() {
 
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var draft by rememberSaveable { mutableStateOf("") }
+    var draftNote by rememberSaveable { mutableStateOf("") }
     var originalNote by rememberSaveable { mutableStateOf("") }
     var planDescription by rememberSaveable { mutableStateOf("") }
     var editorError by rememberSaveable { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
 
-    fun savePrompt() {
+    fun saveContent() {
         if (saving || draft.isBlank()) return
         val id = editingId ?: return
+        val note = draftNote
         val prompt = draft.takeUnless { it == DEFAULT_SCHEDULED_WAKE_PROMPT }
         saving = true
         editorError = null
         scope.launch {
             var saved = false
             try {
-                saved = store.updateWakePrompt(id, prompt)
+                saved = store.updateWakeContent(id, note, prompt)
                 if (saved) {
                     editingId = null
                 } else {
-                    editorError = "该计划已经结束或已由 AI 取消，提示词未保存。"
+                    editorError = "该计划已经结束或已由 AI 取消，备注和提示词未保存。"
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e("WakePromptsPage", "Failed to save wake prompt", e)
+                Log.e("WakePromptsPage", "Failed to save wake content", e)
                 editorError = "保存失败，请稍后重试。"
             } finally {
                 saving = false
             }
-            if (saved) snackbar.showSnackbar("已保存，之后的唤醒将使用这段提示词")
+            if (saved) snackbar.showSnackbar("备注和提示词已保存，将用于之后的唤醒")
         }
     }
 
@@ -127,7 +129,7 @@ fun SettingWakePromptsPage() {
         ) {
             item {
                 Text(
-                    "这里展示 AI 通过工具设置的唤醒计划。你可以编辑唤醒提示词；" +
+                    "这里展示 AI 通过工具设置的唤醒计划。你可以编辑唤醒备注和提示词；" +
                         "创建、调整时间和取消计划，请在聊天中与 AI 商量后由它调用工具。",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -136,7 +138,7 @@ fun SettingWakePromptsPage() {
                 item {
                     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            "还没有 AI 设置的唤醒计划。在聊天中让 AI 创建后，就能在这里编辑提示词。",
+                            "还没有 AI 设置的唤醒计划。在聊天中让 AI 创建后，就能在这里编辑备注和提示词。",
                             modifier = Modifier.padding(16.dp),
                         )
                     }
@@ -146,6 +148,7 @@ fun SettingWakePromptsPage() {
                 WakePromptCard(wake, now, formatter, enabled = !saving) {
                     editingId = wake.id
                     draft = wake.effectivePrompt
+                    draftNote = wake.note
                     originalNote = wake.note
                     planDescription = wakePlanTitle(wake) + " · " + formatter.format(
                         Instant.ofEpochMilli(wake.triggerAtMillis)
@@ -159,14 +162,29 @@ fun SettingWakePromptsPage() {
     if (editingId != null) {
         AlertDialog(
             onDismissRequest = { if (!saving) editingId = null },
-            title = { Text("编辑唤醒提示词") },
+            title = { Text("编辑唤醒内容") },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(planDescription, style = MaterialTheme.typography.labelLarge)
-                    Text("AI 的唤醒备注：${originalNote.ifBlank { "未填写" }}")
+                    Text(
+                        "编辑前的备注：${originalNote.ifBlank { "未填写" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = draftNote,
+                        onValueChange = {
+                            draftNote = it
+                            editorError = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("唤醒备注（可留空）") },
+                        minLines = 3,
+                        maxLines = 6,
+                        enabled = !saving,
+                    )
                     OutlinedTextField(
                         value = draft,
                         onValueChange = {
@@ -181,7 +199,7 @@ fun SettingWakePromptsPage() {
                         isError = draft.isBlank() || editorError != null,
                     )
                     Text(
-                        "只用于这条计划的后续唤醒，会连同 AI 的备注和聊天上下文一起提供给 AI。",
+                        "备注和提示词只用于这条计划的后续唤醒，会连同聊天上下文一起提供给 AI。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     TextButton(
@@ -195,7 +213,7 @@ fun SettingWakePromptsPage() {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { savePrompt() }, enabled = !saving && draft.isNotBlank()) {
+                TextButton(onClick = { saveContent() }, enabled = !saving && draft.isNotBlank()) {
                     Text(if (saving) "保存中…" else "保存")
                 }
             },
@@ -234,14 +252,14 @@ private fun WakePromptCard(
                 )
             }
             Text(
-                "AI 备注：${wake.note.ifBlank { "未填写" }}",
+                "唤醒备注：${wake.note.ifBlank { "未填写" }}",
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
             Text("唤醒提示词", style = MaterialTheme.typography.labelMedium)
             Text(wake.effectivePrompt, maxLines = 4, overflow = TextOverflow.Ellipsis)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onEdit, enabled = enabled && pending) { Text("编辑提示词") }
+                TextButton(onClick = onEdit, enabled = enabled && pending) { Text("编辑备注与提示词") }
             }
         }
     }

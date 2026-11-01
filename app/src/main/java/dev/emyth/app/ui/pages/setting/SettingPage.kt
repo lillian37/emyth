@@ -290,6 +290,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("唤醒提示词") },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingBuiltinPrompts) },
+                        leadingContent = { Icon(HugeIcons.Message01, null) },
+                        supportingContent = { Text("调整聊天、主动消息与插件的固定规则") },
+                        headlineContent = { Text("内置提示词") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingWeixinBot) },
                         leadingContent = { Icon(HugeIcons.MessageMultiple01, null) },
                         supportingContent = { Text("把微信号变成 AI 入口，扫码登录后用微信收发消息") },

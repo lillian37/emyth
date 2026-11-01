@@ -98,7 +98,7 @@ fun createScheduleWakeTool(context: Context): Tool = Tool(
 
 fun createListWakesTool(context: Context): Tool = Tool(
     name = "list_wakes",
-    description = "列出自主唤醒计划，包括重复方式、每日时刻、下次时间、AI 备注和用户编辑的唤醒提示词。",
+    description = "列出自主唤醒计划，包括重复方式、每日时刻、下次时间，以及当前的唤醒备注和提示词。",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = { _ ->
         try {

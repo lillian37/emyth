@@ -121,4 +121,82 @@ class WakePromptTest {
         assertEquals(original.note, next.note)
         assertEquals(Instant.parse("2026-11-01T12:30:00Z").toEpochMilli(), next.triggerAtMillis)
     }
+
+    @Test
+    fun `editing both fields preserves every scheduling field and other plans`() {
+        val original = daily()
+        val other = ScheduledWake(id = "other", triggerAtMillis = due, note = "another plan")
+        val updated = WakeSetting(listOf(original, other))
+            .withWakeContent(original.id, "先写日记，再看看我睡了没有", "按备注自由安排", now)
+
+        assertEquals(
+            listOf(original.copy(note = "先写日记，再看看我睡了没有", prompt = "按备注自由安排"), other),
+            updated.scheduledWakes,
+        )
+    }
+
+    @Test
+    fun `editing both fields cannot recreate a cancelled plan`() {
+        val current = WakeSetting(listOf(daily("remaining")))
+        assertEquals(current, current.withWakeContent("cancelled", "new note", "new prompt", now))
+    }
+
+    @Test
+    fun `editing both fields cannot revive completed or expired one-time plans`() {
+        val completed = ScheduledWake(id = "completed", triggerAtMillis = due, lastTriggeredAtMillis = now)
+        val expired = ScheduledWake(id = "expired", triggerAtMillis = now - 1)
+        val current = WakeSetting(listOf(completed, expired))
+
+        assertEquals(current, current.withWakeContent(completed.id, "new note", "new prompt", now))
+        assertEquals(current, current.withWakeContent(expired.id, "new note", "new prompt", now))
+    }
+
+    @Test
+    fun `future one-time content can change without altering its schedule`() {
+        val original = ScheduledWake(id = "once", triggerAtMillis = due, note = "initial reason")
+        val updated = WakeSetting(listOf(original))
+            .withWakeContent(original.id, "new reason", "new instruction", now).scheduledWakes.single()
+
+        assertEquals(original.copy(note = "new reason", prompt = "new instruction"), updated)
+    }
+
+    @Test
+    fun `a note can be cleared while its custom prompt is kept`() {
+        val original = daily().copy(prompt = "custom instruction")
+        val updated = WakeSetting(listOf(original))
+            .withWakeContent(original.id, "", original.prompt, now).scheduledWakes.single()
+
+        assertEquals(original.copy(note = ""), updated)
+    }
+
+    @Test
+    fun `restoring the default prompt preserves the edited note`() {
+        val original = daily().copy(prompt = "custom instruction")
+        val updated = WakeSetting(listOf(original))
+            .withWakeContent(original.id, "我编辑的新备注", null, now).scheduledWakes.single()
+
+        assertEquals(original.copy(note = "我编辑的新备注", prompt = null), updated)
+        assertEquals(DEFAULT_SCHEDULED_WAKE_PROMPT, updated.effectivePrompt)
+    }
+
+    @Test
+    fun `blank prompts reject a combined note and prompt edit`() {
+        val current = WakeSetting(listOf(daily()))
+        assertTrue(runCatching { current.withWakeContent("daily", "new note", " \n\t", now) }
+            .exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test
+    fun `edited note and prompt survive persistence and daily rearming together`() {
+        val original = daily()
+        val edited = WakeSetting(listOf(original))
+            .withWakeContent(original.id, "第一行备注\n第二行备注", "第一行提示\n第二行提示 💤", now)
+            .scheduledWakes.single()
+        val restored = Json.decodeFromString<ScheduledWake>(Json.encodeToString(edited))
+        val next = requireNotNull(restored.afterAlarm(due, due + 1_000, ZoneId.of("UTC")))
+
+        assertEquals(edited.note, next.note)
+        assertEquals(edited.prompt, next.prompt)
+        assertEquals(Instant.parse("2026-11-01T12:30:00Z").toEpochMilli(), next.triggerAtMillis)
+    }
 }
