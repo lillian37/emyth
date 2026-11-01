@@ -38,9 +38,11 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.ToolApprovalState
-import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
+import dev.emyth.app.data.ai.filterInvalidProactiveToolMessages
+import dev.emyth.app.data.ai.mergeProactiveMessages
+import dev.emyth.app.data.ai.prepareProactiveMessages
 import dev.emyth.app.data.ai.prompts.ProactiveBuiltinPrompts
 import dev.emyth.app.data.ai.prompts.appendProactivePrompt
 import dev.emyth.app.data.ai.prompts.proactiveDeviceContext
@@ -590,7 +592,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 获取历史消息（先过滤掉悬空的工具调用消息，避免 tool_use 结构不完整触发 400）
-                val historyMessages = filterInvalidToolMessages(
+                val historyMessages = filterInvalidProactiveToolMessages(
                     conversation?.currentMessages?.let {
                         if (assistant.contextMessageSize > 0) {
                             it.takeLast(assistant.contextMessageSize)
@@ -620,27 +622,20 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     ))
                 )
 
-                // 应用输入转换器
-                val processedUserMessage = listOf(userMessage).transforms(
-                    transformers = inputTransformers + templateTransformer,
-                    context = this@ProactiveMessageTriggerService,
-                    model = model,
-                    assistant = assistant,
-                    settings = settings
-                ).first()
-
-                // 组合完整消息列表：System + History + User Context
-                // 合并相邻同角色消息（包括 history 末尾与合成 User 消息之间可能出现的 USER-USER 相邻），避免 400
-                val messages = mergeAdjacentSameRoleMessages(
-                    buildList {
-                        add(UIMessage(
-                            role = MessageRole.SYSTEM,
-                            parts = listOf(UIMessagePart.Text(systemPrompt))
-                        ))
-                        addAll(historyMessages)
-                        add(processedUserMessage)
-                    }
-                )
+                // 转换器可能新增时间提醒、模式或世界书消息；必须保留完整结果，不能只取第一条。
+                val messages = prepareProactiveMessages(
+                    systemPrompt = systemPrompt,
+                    historyMessages = historyMessages,
+                    userMessage = userMessage,
+                ) { input ->
+                    input.transforms(
+                        transformers = inputTransformers + templateTransformer,
+                        context = this@ProactiveMessageTriggerService,
+                        model = model,
+                        assistant = assistant,
+                        settings = settings,
+                    )
+                }
 
                 // 直接调用 AI API 生成消息
                 val providerSetting = model.findProvider(settings.providers)
@@ -1097,44 +1092,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     }
 
     /**
-     * 过滤历史消息中"悬空"的工具调用：
-     * 若某条消息存在未执行(isExecuted=false)且不可恢复(approvalState.canResumeToolExecution()==false)的工具调用，
-     * 说明这条消息的工具调用链没有走完（如上次生成被中断、或需要审批但用户一直没确认），
-     * 直接把整条消息从历史里剔除，避免把结构不完整的 tool_use 发给 API 触发 400。
-     *
-     * 判断逻辑与 ChatService.checkInvalidMessages 保持一致：
-     * 只要该消息里存在"至少一个可恢复的待处理工具"，就保留整条消息不做删除；
-     * 只有当所有待处理工具都不可恢复时，才整条移除。
-     */
-    private fun filterInvalidToolMessages(messages: List<UIMessage>): List<UIMessage> {
-        return messages.filterNot { message ->
-            val tools = message.getTools()
-            val hasPendingTools = tools.any { !it.isExecuted }
-            if (!hasPendingTools) return@filterNot false
-            val hasResumableTool = tools.any { !it.isExecuted && it.approvalState.canResumeToolExecution() }
-            !hasResumableTool
-        }
-    }
-
-    /**
-     * 合并相邻同角色消息（ASSISTANT-ASSISTANT / USER-USER 都要合并），
-     * 避免相邻同角色消息触发 Anthropic 等 API 的 400 错误
-     * （"roles must alternate between user and assistant"）。
-     * SYSTEM 角色在本文件的消息列表里只会出现一次（列表最前面），不会与自身相邻，无需特殊处理。
-     */
-    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
-        if (messages.size < 2) return messages
-        return messages.fold(emptyList()) { acc, msg ->
-            val prev = acc.lastOrNull()
-            if (prev != null && prev.role == msg.role) {
-                acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
-            } else {
-                acc + msg
-            }
-        }
-    }
-
-    /**
      * 生成消息，支持工具调用
      * 返回最终消息列表和是否发生了工具调用
      */
@@ -1158,7 +1115,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             // 防御性：每轮调用前合并相邻同角色（尤其 assistant）消息，
             // 避免工具调用多步生成产生相邻 assistant 消息触发 API 400
-            messages = mergeAdjacentSameRoleMessages(messages).toMutableList()
+            messages = mergeProactiveMessages(messages).toMutableList()
 
             // 流式调用 AI（替代非流式 generateText，兼容 thinking 模型）
             var streamMessages = messages.toList()
