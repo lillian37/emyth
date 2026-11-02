@@ -35,11 +35,14 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.emyth.app.data.datastore.DisplaySetting
+import dev.emyth.app.data.datastore.DisplayMaterialMode
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
 import dev.emyth.app.ui.components.ui.ColorPickerDialog
+import dev.emyth.app.ui.components.ui.ClearGlassDefaults
 import dev.emyth.app.ui.components.ui.toComposeColor
 import dev.emyth.app.ui.theme.CustomColors
+import dev.emyth.app.ui.theme.LocalMaterialMode
 import dev.emyth.app.utils.plus
 import org.koin.androidx.compose.koinViewModel
 
@@ -47,6 +50,15 @@ import org.koin.androidx.compose.koinViewModel
 fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    val useGlass = LocalMaterialMode.current == DisplayMaterialMode.GLASS
+    val defaultUserBubbleColor = if (useGlass) ClearGlassDefaults.UserTint
+        else MaterialTheme.colorScheme.secondaryContainer
+    val defaultAssistantBubbleColor = if (useGlass) ClearGlassDefaults.AssistantTint
+        else MaterialTheme.colorScheme.surfaceContainerHigh
+    val defaultThinkingBubbleColor = if (useGlass) ClearGlassDefaults.ThinkingTint
+        else MaterialTheme.colorScheme.surfaceContainerHigh
+    val defaultInputFieldColor = if (useGlass) ClearGlassDefaults.InputTint
+        else MaterialTheme.colorScheme.surfaceContainerLowest
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
@@ -83,7 +95,7 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     if (showUserBubbleColorPicker) {
         ColorPickerDialog(
             initialColor = displaySetting.userBubbleColor,
-            defaultColor = MaterialTheme.colorScheme.secondaryContainer,
+            defaultColor = defaultUserBubbleColor,
             onConfirm = { updateDisplaySetting(displaySetting.copy(userBubbleColor = it)) },
             onDismiss = { showUserBubbleColorPicker = false }
         )
@@ -91,7 +103,7 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     if (showAssistantBubbleColorPicker) {
         ColorPickerDialog(
             initialColor = displaySetting.assistantBubbleColor,
-            defaultColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            defaultColor = defaultAssistantBubbleColor,
             onConfirm = { updateDisplaySetting(displaySetting.copy(assistantBubbleColor = it)) },
             onDismiss = { showAssistantBubbleColorPicker = false }
         )
@@ -99,7 +111,7 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     if (showThinkingBubbleColorPicker) {
         ColorPickerDialog(
             initialColor = displaySetting.thinkingBubbleColor,
-            defaultColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            defaultColor = defaultThinkingBubbleColor,
             onConfirm = { updateDisplaySetting(displaySetting.copy(thinkingBubbleColor = it)) },
             onDismiss = { showThinkingBubbleColorPicker = false }
         )
@@ -123,7 +135,7 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     if (showInputFieldColorPicker) {
         ColorPickerDialog(
             initialColor = displaySetting.inputFieldColor,
-            defaultColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            defaultColor = defaultInputFieldColor,
             onConfirm = { updateDisplaySetting(displaySetting.copy(inputFieldColor = it)) },
             onDismiss = { showInputFieldColorPicker = false }
         )
@@ -198,7 +210,8 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                                     modifier = Modifier
                                         .size(16.dp)
                                         .background(
-                                            displaySetting.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
+                                            displaySetting.userBubbleColor?.let { it.toComposeColor() }
+                                                ?: defaultUserBubbleColor,
                                             CircleShape
                                         )
                                 )
@@ -218,7 +231,8 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                                     modifier = Modifier
                                         .size(16.dp)
                                         .background(
-                                            displaySetting.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            displaySetting.assistantBubbleColor?.let { it.toComposeColor() }
+                                                ?: defaultAssistantBubbleColor,
                                             CircleShape
                                         )
                                 )
@@ -237,7 +251,8 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                                     modifier = Modifier
                                         .size(16.dp)
                                         .background(
-                                            displaySetting.thinkingBubbleColor?.let { it.toComposeColor() } ?: Color.Gray,
+                                            displaySetting.thinkingBubbleColor?.let { it.toComposeColor() }
+                                                ?: if (useGlass) defaultThinkingBubbleColor else Color.Gray,
                                             CircleShape
                                         )
                                 )
@@ -296,7 +311,8 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                                     modifier = Modifier
                                         .size(16.dp)
                                         .background(
-                                            displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerLowest,
+                                            displaySetting.inputFieldColor?.let { it.toComposeColor() }
+                                                ?: defaultInputFieldColor,
                                             CircleShape
                                         )
                                 )
