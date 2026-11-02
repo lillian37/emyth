@@ -7,30 +7,16 @@
 package dev.emyth.app.ui.pages.chat
 
 import android.net.Uri
-import android.content.Context
-import android.graphics.BitmapFactory
-import android.content.ContentResolver
-import android.graphics.Bitmap
-import android.os.Build
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isFinite
-import coil3.BitmapImage
-import coil3.SingletonImageLoader
-import coil3.request.ImageRequest
-import coil3.request.allowHardware
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import dev.emyth.app.ui.components.message.LiveBubbleBlurContext
-import dev.emyth.app.ui.components.message.LocalLiveBubbleBlur
+import dev.emyth.app.ui.components.ui.GlassBackdrop
+import dev.emyth.app.ui.components.ui.LocalGlassBackdrop
+import dev.emyth.app.ui.components.ui.rememberGlassBackdropBitmap
 import dev.emyth.app.data.datastore.DisplayMaterialMode
 import dev.emyth.app.ui.theme.LocalMaterialMode
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -115,59 +101,6 @@ import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
 import kotlin.uuid.Uuid
 
-private suspend fun decodeChatBackgroundBitmap(
-    context: Context,
-    model: String,
-): ImageBitmap? = withContext(Dispatchers.IO) {
-    val uri = runCatching { Uri.parse(model) }.getOrNull()
-    val bitmap = when {
-        model.startsWith("/") -> {
-            BitmapFactory.decodeFile(model)
-        }
-
-        uri?.scheme == ContentResolver.SCHEME_CONTENT ||
-            uri?.scheme == ContentResolver.SCHEME_ANDROID_RESOURCE -> {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            }
-        }
-
-        uri?.scheme == ContentResolver.SCHEME_FILE -> {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            } ?: uri.path?.let(BitmapFactory::decodeFile)
-        }
-
-        uri?.scheme == "http" || uri?.scheme == "https" -> {
-            loadChatBackgroundViaCoil(context, model)
-        }
-
-        else -> {
-            BitmapFactory.decodeFile(model)
-                ?: uri?.let {
-                    runCatching {
-                        context.contentResolver.openInputStream(it)?.use(BitmapFactory::decodeStream)
-                    }.getOrNull()
-                }
-        }
-    }
-    bitmap?.asImageBitmap()
-}
-
-/**
- * 使用项目现有 Coil 3 ImageLoader 加载同一 model（与 Coil 显示背景使用同一套 fetcher/缓存）。
- * 调用方已处于 Dispatchers.IO，Coil 内部网络/解码不会阻塞主线程。
- */
-private suspend fun loadChatBackgroundViaCoil(context: Context, model: String): Bitmap? {
-    val loader = SingletonImageLoader.get(context)
-    val request = ImageRequest.Builder(context)
-        .data(model)
-        // 硬件位图无法被 asImageBitmap/RenderEffect 采样，关闭硬件加速以保证可读
-        .allowHardware(false)
-        .build()
-    val result = loader.execute(request)
-    return (result.image as? BitmapImage)?.bitmap
-}
 
 @Composable
 fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, autoStartVoice: Boolean = false) {
@@ -349,30 +282,20 @@ private fun ChatPageContent(
     var previewMode by rememberSaveable { mutableStateOf(false) }
     val hazeState = rememberHazeState()
 
-    // ===== 普通聊天气泡实时背景模糊 =====
+    // 所有聊天玻璃表面共享一张轻柔虚化的壁纸，滚动时只裁切，不重新模糊。
     val actualMaterialMode = LocalMaterialMode.current
-    val enableLiveBubbleBlur =
-        setting.displaySetting.interfaceRealtimeRendering &&
-            setting.displaySetting.chatBubbleRealtimeBlur &&
-            actualMaterialMode == DisplayMaterialMode.GLASS &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val enableGlassBackdrop =
+        actualMaterialMode == DisplayMaterialMode.GLASS &&
+            setting.displaySetting.interfaceRealtimeRendering &&
+            setting.displaySetting.chatBubbleRealtimeBlur
     val chatBackgroundPainter = rememberChatBackgroundPainter(setting)
     val chatBackgroundVisuals = rememberChatBackgroundVisuals(setting)
-    val bubbleBlurBackgroundModel = setting.getCurrentAssistant().background
-    val bubbleBlurContext = LocalContext.current.applicationContext
-    var bubbleBlurBackgroundBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(bubbleBlurBackgroundModel) {
-        if (bubbleBlurBackgroundModel != null) {
-            bubbleBlurBackgroundBitmap = runCatching {
-                decodeChatBackgroundBitmap(bubbleBlurContext, bubbleBlurBackgroundModel)
-            }.getOrNull()
-        } else {
-            bubbleBlurBackgroundBitmap = null
-        }
-    }
-    var bubbleBlurBackgroundOrigin by remember { mutableStateOf(Offset.Unspecified) }
-    var bubbleBlurBackgroundSize by remember { mutableStateOf(Size.Unspecified) }
-    val bubbleBlurRadiusPx = with(LocalDensity.current) { 5.dp.toPx() }
+    val glassBackdropBitmap = rememberGlassBackdropBitmap(
+        model = setting.getCurrentAssistant().background,
+        enabled = enableGlassBackdrop,
+    )
+    var glassBackdropOrigin by remember { mutableStateOf(Offset.Unspecified) }
+    var glassBackdropSize by remember { mutableStateOf(Size.Zero) }
 
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
@@ -386,8 +309,8 @@ private fun ChatPageContent(
                 .onGloballyPositioned { coordinates ->
                     val pos = coordinates.positionInWindow()
                     if (pos.isFinite && coordinates.size.width > 0 && coordinates.size.height > 0) {
-                        bubbleBlurBackgroundOrigin = pos
-                        bubbleBlurBackgroundSize = Size(
+                        glassBackdropOrigin = pos
+                        glassBackdropSize = Size(
                             coordinates.size.width.toFloat(),
                             coordinates.size.height.toFloat(),
                         )
@@ -395,17 +318,20 @@ private fun ChatPageContent(
                 }
         ) {
             CompositionLocalProvider(
-                LocalLiveBubbleBlur provides LiveBubbleBlurContext(
-                    imageBitmap = if (enableLiveBubbleBlur) bubbleBlurBackgroundBitmap else null,
-                    backgroundOriginInWindow = bubbleBlurBackgroundOrigin,
-                    backgroundSizePx = bubbleBlurBackgroundSize,
-                    baseColor = chatBackgroundVisuals.baseColor,
-                    imageAlpha = chatBackgroundVisuals.imageAlpha,
-                    gradientTopAlpha = chatBackgroundVisuals.gradientTopAlpha,
-                    gradientBottomAlpha = chatBackgroundVisuals.gradientBottomAlpha,
-                    enabled = enableLiveBubbleBlur,
-                    radiusPx = bubbleBlurRadiusPx,
-                )
+                LocalGlassBackdrop provides if (enableGlassBackdrop && glassBackdropBitmap != null) {
+                    GlassBackdrop(
+                        imageBitmap = glassBackdropBitmap,
+                        backgroundOriginInWindow = glassBackdropOrigin,
+                        backgroundSizePx = glassBackdropSize,
+                        baseColor = MaterialTheme.colorScheme.background,
+                        gradientColor = chatBackgroundVisuals.baseColor,
+                        imageAlpha = chatBackgroundVisuals.imageAlpha,
+                        gradientTopAlpha = chatBackgroundVisuals.gradientTopAlpha,
+                        gradientBottomAlpha = chatBackgroundVisuals.gradientBottomAlpha,
+                    )
+                } else {
+                    null
+                }
             ) {
                 AssistantBackground(setting = setting, backgroundPainter = chatBackgroundPainter)
         Scaffold(

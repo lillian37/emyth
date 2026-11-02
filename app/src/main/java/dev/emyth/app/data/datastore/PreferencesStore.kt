@@ -802,9 +802,9 @@ data class DisplaySetting(
     val enableAutoScroll: Boolean = true,
     val enableLatexRendering: Boolean = true,
     val enableBlurEffect: Boolean = false,
-    // 界面实时渲染开关（玻璃界面总开关，默认关）
+    // 玻璃背景效果总开关（保留原存储字段名，默认关）
     val interfaceRealtimeRendering: Boolean = false,
-    // 聊天气泡实时背景模糊（固定 5dp，默认关）
+    // 聊天玻璃表面的轻柔壁纸虚化（共享缩小缓存，默认关）
     val chatBubbleRealtimeBlur: Boolean = false,
     // 抽屉实时模糊强度（dp，3..20）
     val interfaceBlurRadius: Float = 8f,

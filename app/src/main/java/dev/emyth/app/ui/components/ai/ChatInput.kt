@@ -106,6 +106,7 @@ import me.rerere.hugeicons.stroke.Voice
 import me.rerere.hugeicons.stroke.Zap
 import dev.emyth.app.R
 import dev.emyth.app.data.ai.mcp.McpManager
+import dev.emyth.app.data.datastore.DisplayMaterialMode
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.getCurrentAssistant
 import dev.emyth.app.data.datastore.getCurrentChatModel
@@ -116,6 +117,7 @@ import dev.emyth.app.data.model.Conversation
 import dev.emyth.app.data.model.QuickMessage
 import dev.emyth.app.service.VoiceCallService
 import dev.emyth.app.ui.components.ui.KeepScreenOn
+import dev.emyth.app.ui.components.ui.ClearGlassSurface
 import dev.emyth.app.ui.components.ui.toComposeColor
 import dev.emyth.app.ui.components.ui.permission.PermissionManager
 import dev.emyth.app.ui.components.ui.permission.PermissionRecordAudio
@@ -124,6 +126,7 @@ import dev.emyth.app.ui.context.LocalASRState
 import dev.emyth.app.ui.context.LocalCurrentAssistant
 import dev.emyth.app.ui.context.LocalCurrentChatModel
 import dev.emyth.app.ui.context.LocalDisplaySettings
+import dev.emyth.app.ui.theme.LocalMaterialMode
 import dev.emyth.app.ui.context.LocalProviders
 import dev.emyth.app.ui.context.LocalQuickMessages
 import dev.emyth.app.ui.context.LocalSettings
@@ -486,6 +489,8 @@ fun ChatInput(
             android.graphics.BitmapFactory.decodeFile(inputBgPath)?.asImageBitmap()
         } else null
     }
+    val useGlassInput = LocalMaterialMode.current == DisplayMaterialMode.GLASS && inputBgBitmap == null
+    val inputTintColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor
 
     Surface(
         color = Color.Transparent,
@@ -503,7 +508,7 @@ fun ChatInput(
                     .fillMaxWidth()
                     .clip(MaterialTheme.shapes.largeIncreased)
                     .then(
-                        if (settings.displaySetting.enableBlurEffect) Modifier.hazeEffect(
+                        if (settings.displaySetting.enableBlurEffect && !useGlassInput) Modifier.hazeEffect(
                             state = hazeState,
                             style = HazeMaterials.ultraThin(containerColor = hazeTintColor)
                         )
@@ -512,12 +517,21 @@ fun ChatInput(
                 shape = MaterialTheme.shapes.largeIncreased,
                 tonalElevation = 0.dp,
                 // When background image is set, make surface transparent so image is visible
-                color = if (inputBgBitmap != null) Color.Transparent
+                color = if (inputBgBitmap != null || useGlassInput) Color.Transparent
                     else if (settings.displaySetting.enableBlurEffect) Color.Transparent
-                    else settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor,
+                    else inputTintColor,
             ) {
                 // Use Box so background image can match parent size
                 Box {
+                    if (useGlassInput) {
+                        ClearGlassSurface(
+                            tintColor = inputTintColor,
+                            cornerRadius = 28.dp,
+                            shape = MaterialTheme.shapes.largeIncreased,
+                            modifier = Modifier.matchParentSize(),
+                            dense = true,
+                        ) {}
+                    }
                     // Background image inside input area (matches content size exactly)
                     if (inputBgBitmap != null) {
                         Image(
@@ -540,7 +554,8 @@ fun ChatInput(
 
                         TextInputRow(
                             state = state,
-                            onSendMessage = { sendMessage() }
+                            onSendMessage = { sendMessage() },
+                            glassBackground = useGlassInput,
                         )
 
                         Row(
@@ -791,6 +806,7 @@ private fun ActionIconButton(
 private fun TextInputRow(
     state: ChatInputState,
     onSendMessage: () -> Unit,
+    glassBackground: Boolean = false,
 ) {
     val displaySettings = LocalDisplaySettings.current
     val filesManager: FilesManager = koinInject()
@@ -888,8 +904,10 @@ private fun TextInputRow(
             colors = TextFieldDefaults.colors().copy(
                 unfocusedIndicatorColor = Color.Transparent,
                 focusedIndicatorColor = Color.Transparent,
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
+                focusedContainerColor = if (glassBackground) Color.Transparent
+                    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
+                unfocusedContainerColor = if (glassBackground) Color.Transparent
+                    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
             ),
             trailingIcon = {
                 if (isFocused) {

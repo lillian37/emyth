@@ -193,8 +193,8 @@ fun SettingDisplayThemePage(vm: SettingVM = koinViewModel()) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(4.dp)),
-                        headlineContent = { Text("界面实时渲染") },
-                        supportingContent = { Text("为玻璃界面启用实时背景渲染") },
+                        headlineContent = { Text("玻璃背景效果") },
+                        supportingContent = { Text("让玻璃界面透出柔和的背景层次") },
                         trailingContent = {
                             Switch(
                                 checked = displaySetting.interfaceRealtimeRendering,
@@ -210,8 +210,8 @@ fun SettingDisplayThemePage(vm: SettingVM = koinViewModel()) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(4.dp)),
-                            headlineContent = { Text("聊天气泡实时模糊") },
-                            supportingContent = { Text("为聊天气泡实时渲染背景模糊") },
+                            headlineContent = { Text("聊天背景柔化") },
+                            supportingContent = { Text("轻柔虚化气泡、思考条和输入框后的壁纸，文字保持清晰") },
                             trailingContent = {
                                 Switch(
                                     checked = displaySetting.chatBubbleRealtimeBlur,
@@ -226,7 +226,7 @@ fun SettingDisplayThemePage(vm: SettingVM = koinViewModel()) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(4.dp)),
-                            headlineContent = { Text("模糊强度") },
+                            headlineContent = { Text("侧边栏模糊强度") },
                             supportingContent = {
                                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Slider(

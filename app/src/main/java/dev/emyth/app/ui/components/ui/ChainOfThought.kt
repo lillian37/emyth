@@ -49,6 +49,8 @@ import androidx.compose.ui.util.fastForEach
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowDown01
 import dev.emyth.app.ui.context.LocalSettings
+import dev.emyth.app.ui.theme.LocalMaterialMode
+import dev.emyth.app.data.datastore.DisplayMaterialMode
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.Search01
@@ -84,104 +86,120 @@ fun <T> ChainOfThought(
     content: @Composable ChainOfThoughtScope.(T) -> Unit
 ) {
     val settings = LocalSettings.current
-    val thinkingAlpha = 1f - settings.displaySetting.thinkingChainTransparency / 100f
+    val thinkingAlpha = (1f - settings.displaySetting.thinkingChainTransparency / 100f).coerceIn(0f, 1f)
+    val useGlass = LocalMaterialMode.current == DisplayMaterialMode.GLASS
 
     var expanded by remember { mutableStateOf(false) }
     val canCollapse = steps.size > collapsedVisibleCount
     val shouldFillCollapseControlWidth = expanded || !collapsedAdaptiveWidth
 
     val thinkingBubbleColor = settings.displaySetting.thinkingBubbleColor?.let { it.toComposeColor() }
+    val thinkingTintColor = thinkingBubbleColor ?: cardColors.containerColor
     val effectiveCardColors = CardDefaults.cardColors(
-        containerColor = (thinkingBubbleColor ?: cardColors.containerColor).copy(alpha = thinkingAlpha),
+        containerColor = if (useGlass) Color.Transparent else thinkingTintColor.copy(alpha = thinkingAlpha),
         contentColor = cardColors.contentColor,
         disabledContainerColor = cardColors.disabledContainerColor,
         disabledContentColor = cardColors.disabledContentColor,
     )
 
     CompositionLocalProvider(
-        LocalCardColor provides cardColors.containerColor
+        LocalCardColor provides if (useGlass) {
+            thinkingTintColor.copy(alpha = 0.18f * thinkingAlpha)
+        } else {
+            cardColors.containerColor
+        }
     ) {
-    Card(
+        Card(
             modifier = modifier,
             colors = effectiveCardColors,
             shape = RoundedCornerShape(16.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-                    .animateContentSize(
-                        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
-                    ),
-            ) {
-                val visibleSteps = if (expanded || !canCollapse) {
-                    steps
-                } else {
-                    steps.takeLast(collapsedVisibleCount)
+            Box {
+                if (useGlass) {
+                    ClearGlassSurface(
+                        tintColor = thinkingTintColor,
+                        cornerRadius = 16.dp,
+                        opacity = thinkingAlpha,
+                        modifier = Modifier.matchParentSize(),
+                    ) {}
                 }
+                Column(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .animateContentSize(
+                            animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
+                        ),
+                ) {
+                    val visibleSteps = if (expanded || !canCollapse) {
+                        steps
+                    } else {
+                        steps.takeLast(collapsedVisibleCount)
+                    }
 
-                // 显示展开/折叠按钮（统一在顶部）
-                if (canCollapse) {
-                    Row(
-                        modifier = Modifier
-                            .then(
-                                if (shouldFillCollapseControlWidth) {
-                                    Modifier.fillMaxWidth()
-                                } else {
-                                    Modifier
-                                }
-                            )
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { expanded = !expanded }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // 左侧：图标区域（24.dp，和步骤图标对齐）
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center,
+                    // 显示展开/折叠按钮（统一在顶部）
+                    if (canCollapse) {
+                        Row(
+                            modifier = Modifier
+                                .then(
+                                    if (shouldFillCollapseControlWidth) {
+                                        Modifier.fillMaxWidth()
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .clip(MaterialTheme.shapes.small)
+                                .clickable { expanded = !expanded }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary,
+                            // 左侧：图标区域（24.dp，和步骤图标对齐）
+                            Box(
+                                modifier = Modifier.width(24.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+
+                            // 右侧：文字区域（8.dp 间距后开始，和步骤 label 对齐）
+                            Text(
+                                modifier = Modifier.padding(start = 8.dp),
+                                text = if (expanded) {
+                                    stringResource(R.string.chain_of_thought_collapse)
+                                } else {
+                                    stringResource(
+                                        R.string.chain_of_thought_show_more_steps,
+                                        steps.size - collapsedVisibleCount
+                                    )
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
-
-                        // 右侧：文字区域（8.dp 间距后开始，和步骤 label 对齐）
-                        Text(
-                            modifier = Modifier.padding(start = 8.dp),
-                            text = if (expanded) {
-                                stringResource(R.string.chain_of_thought_collapse)
-                            } else {
-                                stringResource(
-                                    R.string.chain_of_thought_show_more_steps,
-                                    steps.size - collapsedVisibleCount
-                                )
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
                     }
-                }
 
-                val lineColor = MaterialTheme.colorScheme.outlineVariant
-                val scope = remember { ChainOfThoughtScopeImpl() }
-                Box(
-                    modifier = Modifier.drawBehind {
-                        val x = 12.dp.toPx()
-                        val offsetPx = 18.dp.toPx()
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(x, offsetPx),
-                            end = Offset(x, size.height - offsetPx),
-                            strokeWidth = 1.dp.toPx()
-                        )
-                    }
-                ) {
-                    Column {
-                        visibleSteps.fastForEach { step ->
-                            scope.content(step)
+                    val lineColor = MaterialTheme.colorScheme.outlineVariant
+                    val scope = remember { ChainOfThoughtScopeImpl() }
+                    Box(
+                        modifier = Modifier.drawBehind {
+                            val x = 12.dp.toPx()
+                            val offsetPx = 18.dp.toPx()
+                            drawLine(
+                                color = lineColor,
+                                start = Offset(x, offsetPx),
+                                end = Offset(x, size.height - offsetPx),
+                                strokeWidth = 1.dp.toPx()
+                            )
+                        }
+                    ) {
+                        Column {
+                            visibleSteps.fastForEach { step ->
+                                scope.content(step)
+                            }
                         }
                     }
                 }
