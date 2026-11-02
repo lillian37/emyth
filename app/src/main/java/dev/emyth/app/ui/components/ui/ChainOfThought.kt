@@ -78,7 +78,11 @@ private val LocalCardColor = staticCompositionLocalOf { Color.White }
 fun <T> ChainOfThought(
     modifier: Modifier = Modifier,
     cardColors: CardColors = CardDefaults.cardColors(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        containerColor = if (LocalMaterialMode.current == DisplayMaterialMode.GLASS) {
+            ClearGlassDefaults.ThinkingTint
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
     ),
     steps: List<T>,
     collapsedVisibleCount: Int = 2,

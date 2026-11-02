@@ -92,7 +92,7 @@ private suspend fun loadGlassBackdropBitmap(context: Context, model: String): Im
             // Never recycle Coil-owned images. Only our temporary scaled bitmap belongs to us.
             if (sampled !== source) sampled.recycle()
             currentCoroutineContext().ensureActive()
-            val softened = blurGlassBackdropPixels(pixels, width, height)
+            val softened = blurGlassBackdropPixels(pixels, width, height, radius = 1)
             currentCoroutineContext().ensureActive()
             val bitmap = Bitmap.createBitmap(softened, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
             glassBackdropCache[key] = bitmap

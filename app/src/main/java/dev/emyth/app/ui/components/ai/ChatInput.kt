@@ -118,6 +118,7 @@ import dev.emyth.app.data.model.QuickMessage
 import dev.emyth.app.service.VoiceCallService
 import dev.emyth.app.ui.components.ui.KeepScreenOn
 import dev.emyth.app.ui.components.ui.ClearGlassSurface
+import dev.emyth.app.ui.components.ui.ClearGlassDefaults
 import dev.emyth.app.ui.components.ui.toComposeColor
 import dev.emyth.app.ui.components.ui.permission.PermissionManager
 import dev.emyth.app.ui.components.ui.permission.PermissionRecordAudio
@@ -490,7 +491,8 @@ fun ChatInput(
         } else null
     }
     val useGlassInput = LocalMaterialMode.current == DisplayMaterialMode.GLASS && inputBgBitmap == null
-    val inputTintColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor
+    val inputTintColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() }
+        ?: if (useGlassInput) ClearGlassDefaults.InputTint else hazeTintColor
 
     Surface(
         color = Color.Transparent,

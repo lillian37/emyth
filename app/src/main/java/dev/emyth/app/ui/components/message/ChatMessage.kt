@@ -108,6 +108,7 @@ import dev.emyth.app.ui.components.richtext.MarkdownBlock
 import dev.emyth.app.ui.components.richtext.ZoomableAsyncImage
 import dev.emyth.app.ui.components.richtext.buildMarkdownPreviewHtml
 import dev.emyth.app.ui.components.ui.ChainOfThought
+import dev.emyth.app.ui.components.ui.ClearGlassDefaults
 import dev.emyth.app.ui.components.ui.ClearGlassSurface
 import dev.emyth.app.ui.components.ui.Favicon
 import dev.emyth.app.ui.context.LocalNavController
@@ -321,6 +322,11 @@ private fun MessagePartsBlock(
     val hapticFeedback = LocalHapticFeedback.current
     val displaySettings = LocalDisplaySettings.current
     val bubbleAlpha = 1f - displaySettings.chatBubbleTransparency / 100f
+    val isGlass = LocalMaterialMode.current == DisplayMaterialMode.GLASS
+    val userBubbleColor = displaySettings.userBubbleColor?.toComposeColor()
+        ?: if (isGlass) ClearGlassDefaults.UserTint else MaterialTheme.colorScheme.secondaryContainer
+    val assistantBubbleColor = displaySettings.assistantBubbleColor?.toComposeColor()
+        ?: if (isGlass) ClearGlassDefaults.AssistantTint else MaterialTheme.colorScheme.surfaceContainerHigh
     val partsState by rememberUpdatedState(parts)
  
     val handleClickCitation: (String) -> Unit = remember {
@@ -419,7 +425,7 @@ private fun MessagePartsBlock(
                                                     BubbleSurface(
                                                         imagePath = displaySettings.userBubbleImagePath,
                                                         cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
+                                                        color = userBubbleColor,
                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                         bubbleAlpha = bubbleAlpha,
                                                         onClick = { onUserMessageClick?.invoke() },
@@ -440,7 +446,7 @@ private fun MessagePartsBlock(
                                         BubbleSurface(
                                             imagePath = displaySettings.userBubbleImagePath,
                                             cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
+                                            color = userBubbleColor,
                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                             bubbleAlpha = bubbleAlpha,
                                             onClick = { onUserMessageClick?.invoke() },
@@ -470,7 +476,7 @@ private fun MessagePartsBlock(
                                                     BubbleSurface(
                                                         imagePath = displaySettings.assistantBubbleImagePath,
                                                         cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                        color = assistantBubbleColor,
                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                         bubbleAlpha = bubbleAlpha,
                                                     ) {
@@ -503,7 +509,7 @@ private fun MessagePartsBlock(
                                         BubbleSurface(
                                             imagePath = displaySettings.assistantBubbleImagePath,
                                             cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            color = assistantBubbleColor,
                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                             bubbleAlpha = bubbleAlpha,
                                         ) {
