@@ -490,9 +490,11 @@ fun ChatInput(
             android.graphics.BitmapFactory.decodeFile(inputBgPath)?.asImageBitmap()
         } else null
     }
-    val useGlassInput = LocalMaterialMode.current == DisplayMaterialMode.GLASS && inputBgBitmap == null
+    val useGlassMaterial = LocalMaterialMode.current == DisplayMaterialMode.GLASS
+    val useGlassInput = useGlassMaterial && inputBgBitmap == null
+    val useInputHaze = settings.displaySetting.enableBlurEffect && !useGlassMaterial && inputBgBitmap == null
     val inputTintColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() }
-        ?: if (useGlassInput) ClearGlassDefaults.InputTint else hazeTintColor
+        ?: if (useGlassMaterial) ClearGlassDefaults.InputTint else hazeTintColor
 
     Surface(
         color = Color.Transparent,
@@ -510,7 +512,7 @@ fun ChatInput(
                     .fillMaxWidth()
                     .clip(MaterialTheme.shapes.largeIncreased)
                     .then(
-                        if (settings.displaySetting.enableBlurEffect && !useGlassInput) Modifier.hazeEffect(
+                        if (useInputHaze) Modifier.hazeEffect(
                             state = hazeState,
                             style = HazeMaterials.ultraThin(containerColor = hazeTintColor)
                         )
@@ -519,8 +521,7 @@ fun ChatInput(
                 shape = MaterialTheme.shapes.largeIncreased,
                 tonalElevation = 0.dp,
                 // When background image is set, make surface transparent so image is visible
-                color = if (inputBgBitmap != null || useGlassInput) Color.Transparent
-                    else if (settings.displaySetting.enableBlurEffect) Color.Transparent
+                color = if (inputBgBitmap != null || useGlassInput || useInputHaze) Color.Transparent
                     else inputTintColor,
             ) {
                 // Use Box so background image can match parent size
@@ -749,7 +750,7 @@ fun ChatInput(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(20.dp))
                             .then(
-                                if (settings.displaySetting.enableBlurEffect) Modifier.hazeEffect(
+                                if (settings.displaySetting.enableBlurEffect && !useGlassMaterial) Modifier.hazeEffect(
                                     state = hazeState,
                                     style = HazeMaterials.ultraThin()
                                 )
@@ -757,26 +758,37 @@ fun ChatInput(
                             ),
                         shape = RoundedCornerShape(20.dp),
                         tonalElevation = 0.dp,
-                        color = if (settings.displaySetting.enableBlurEffect) Color.Transparent else hazeTintColor,
+                        color = if (useGlassMaterial || settings.displaySetting.enableBlurEffect) Color.Transparent
+                            else hazeTintColor,
                     ) {
-                        FilesPicker(
-                            conversation = conversation,
-                            state = state,
-                            assistant = assistant,
-                            mcpManager = mcpManager,
-                            onCompressContext = onCompressContext,
-                            onUpdateAssistant = onUpdateAssistant,
-                            showInjectionSheet = showInjectionSheet,
-                            onShowInjectionSheetChange = { showInjectionSheet = it },
-                            showCompressDialog = showCompressDialog,
-                            onShowCompressDialogChange = { showCompressDialog = it },
-                            onDismiss = { dismissExpand() },
-                            onTakePic = onLaunchCamera,
-                            onPickImage = { imagePickerLauncher.launch("image/*") },
-                            onPickVideo = { videoPickerLauncher.launch("video/*") },
-                            onPickAudio = { audioPickerLauncher.launch("audio/*") },
-                            onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
-                        )
+                        Box {
+                            if (useGlassMaterial) {
+                                ClearGlassSurface(
+                                    tintColor = inputTintColor,
+                                    cornerRadius = 20.dp,
+                                    modifier = Modifier.matchParentSize(),
+                                    dense = true,
+                                ) {}
+                            }
+                            FilesPicker(
+                                conversation = conversation,
+                                state = state,
+                                assistant = assistant,
+                                mcpManager = mcpManager,
+                                onCompressContext = onCompressContext,
+                                onUpdateAssistant = onUpdateAssistant,
+                                showInjectionSheet = showInjectionSheet,
+                                onShowInjectionSheetChange = { showInjectionSheet = it },
+                                showCompressDialog = showCompressDialog,
+                                onShowCompressDialogChange = { showCompressDialog = it },
+                                onDismiss = { dismissExpand() },
+                                onTakePic = onLaunchCamera,
+                                onPickImage = { imagePickerLauncher.launch("image/*") },
+                                onPickVideo = { videoPickerLauncher.launch("video/*") },
+                                onPickAudio = { audioPickerLauncher.launch("audio/*") },
+                                onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+                            )
+                        }
                     }
                 }
             }

@@ -97,6 +97,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import dev.emyth.app.R
 import dev.emyth.app.data.datastore.Settings
+import dev.emyth.app.data.datastore.DisplayMaterialMode
 import dev.emyth.app.data.datastore.findModelById
 import dev.emyth.app.data.datastore.getAssistantById
 import dev.emyth.app.data.model.Conversation
@@ -108,6 +109,7 @@ import dev.emyth.app.ui.components.ui.ListSelectableItem
 import dev.emyth.app.ui.components.ui.RabbitLoadingIndicator
 import dev.emyth.app.ui.components.ui.Tooltip
 import dev.emyth.app.ui.hooks.ImeLazyListAutoScroller
+import dev.emyth.app.ui.theme.LocalMaterialMode
 import dev.emyth.app.utils.plus
 import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
@@ -221,6 +223,8 @@ private fun ChatListNormal(
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
 ) {
+    val useHazeSource = settings.displaySetting.enableBlurEffect &&
+        LocalMaterialMode.current != DisplayMaterialMode.GLASS
     val scope = rememberCoroutineScope()
     val loadingState by rememberUpdatedState(loading)
     var isRecentScroll by remember { mutableStateOf(false) }
@@ -321,7 +325,7 @@ private fun ChatListNormal(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(state = hazeState)
+                .then(if (useHazeSource) Modifier.hazeSource(state = hazeState) else Modifier)
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
             itemsIndexed(
@@ -616,6 +620,8 @@ private fun ChatListPreview(
     animatedVisibilityScope: AnimatedVisibilityScope,
     onJumpToMessage: (Int) -> Unit
 ) {
+    val useHazeSource = settings.displaySetting.enableBlurEffect &&
+        LocalMaterialMode.current != DisplayMaterialMode.GLASS
     var searchQuery by remember { mutableStateOf("") }
 
     // 过滤消息，同时保留原始 index 避免后续 O(n) indexOf 查找
@@ -632,7 +638,7 @@ private fun ChatListPreview(
         modifier = Modifier
             .padding(top = innerPadding.calculateTopPadding())
             .fillMaxSize()
-            .hazeSource(state = hazeState),
+            .then(if (useHazeSource) Modifier.hazeSource(state = hazeState) else Modifier),
     ) {
         // 搜索框
         OutlinedTextField(
