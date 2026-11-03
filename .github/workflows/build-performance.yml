@@ -56,10 +56,22 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Test and build optimized APK
+      - name: Run unit tests and render glass samples
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assemblePerformance --no-daemon --max-workers=2
+          ./gradlew :app:testDebugUnitTest --no-daemon --max-workers=2
+
+      - name: Upload glass samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emyth-glass-samples-${{ github.run_number }}
+          path: app/build/reports/glass-samples/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build optimized APK
+        run: ./gradlew :app:assemblePerformance --no-daemon --max-workers=2
 
       - name: Verify test package and optimization outputs
         run: |

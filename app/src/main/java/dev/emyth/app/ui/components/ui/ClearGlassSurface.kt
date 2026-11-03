@@ -27,7 +27,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
@@ -147,17 +146,7 @@ fun ClearGlassSurface(
                         1f to tintColor.copy(alpha = tintStrength).compositeOver(readability),
                     ),
                 )
-                val rim = Brush.linearGradient(
-                    colorStops = arrayOf(
-                        0f to Color.White.copy(alpha = (if (darkTheme) 0.34f else 0.46f) * strength),
-                        0.25f to Color.White.copy(alpha = 0.16f * strength),
-                        0.60f to Color.White.copy(alpha = 0.025f * strength),
-                        0.85f to Color.Black.copy(alpha = 0.08f * strength),
-                        1f to Color.Black.copy(alpha = 0.12f * strength),
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height),
-                )
+                val rim = glassRimBrush(rimSize, tintColor, strength, darkTheme)
                 val rimStroke = Stroke(width = rimWidth)
                 onDrawBehind {
                     if (strength <= 0f) return@onDrawBehind
@@ -205,9 +194,7 @@ fun ClearGlassSurface(
                     }
                     if (tintEnabled) drawRect(fill)
                     if (rimSize.width > 0f && rimSize.height > 0f) {
-                        translate(left = rimInset, top = rimInset) {
-                            drawOutline(rimOutline, brush = rim, style = rimStroke)
-                        }
+                        drawGlassRim(rimOutline, rim, rimStroke, rimInset)
                     }
                 }
             }

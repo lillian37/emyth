@@ -153,6 +153,16 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests.all {
+            val glassSamples = project.layout.buildDirectory.dir("reports/glass-samples/${it.name}")
+            it.systemProperty(
+                "emyth.glass.samples.dir",
+                glassSamples.get().asFile.absolutePath,
+            )
+            it.outputs.dir(glassSamples).withPropertyName("glassRenderSamples")
+        }
+    }
     sourceSets {
         getByName("androidTest").assets.srcDirs("$projectDir/schemas")
     }
@@ -390,6 +400,7 @@ dependencies {
 
     // tests
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
