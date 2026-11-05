@@ -11,6 +11,7 @@ import kotlinx.serialization.Serializable
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
+import java.util.Locale
 
 const val DEFAULT_SCHEDULED_WAKE_PROMPT =
     "这是你之前主动设置的定时唤醒。请务必根据唤醒备注，主动给用户发一条自然、关心的消息。" +
@@ -26,6 +27,53 @@ enum class WakeRepeat(val value: String) {
 }
 
 @Serializable
+enum class ScheduledWakeExecutionStatus(val label: String, val isTerminal: Boolean = false) {
+    @SerialName("started")
+    STARTED("唤醒任务已启动"),
+
+    @SerialName("preparing")
+    PREPARING("正在准备回复"),
+
+    @SerialName("requesting")
+    REQUESTING("正在请求模型"),
+
+    @SerialName("streaming")
+    STREAMING("正在接收回复"),
+
+    @SerialName("running_tools")
+    RUNNING_TOOLS("正在执行工具"),
+
+    @SerialName("completed")
+    COMPLETED("回复已生成并保存", true),
+
+    @SerialName("skipped")
+    SKIPPED("模型选择跳过，本次未发送", true),
+
+    @SerialName("failed")
+    FAILED("生成失败", true),
+
+    @SerialName("interrupted")
+    INTERRUPTED("生成已中断", true),
+
+    @SerialName("busy")
+    BUSY("会话正忙，本次未发送", true),
+
+    @SerialName("start_failed")
+    START_FAILED("后台服务启动失败", true);
+
+    val value: String get() = name.lowercase(Locale.ROOT)
+}
+
+@Serializable
+data class ScheduledWakeExecution(
+    val status: ScheduledWakeExecutionStatus,
+    val scheduledAtMillis: Long,
+    val updatedAtMillis: Long,
+    val conversationId: String? = null,
+    val detail: String? = null,
+)
+
+@Serializable
 data class ScheduledWake(
     val id: String = "",
     val triggerAtMillis: Long = 0,
@@ -35,12 +83,83 @@ data class ScheduledWake(
     val lastTriggeredAtMillis: Long = 0,
     val lastTriggeredDate: String? = null,
     val prompt: String? = null,
+    val execution: ScheduledWakeExecution? = null,
 )
 
 @Serializable
 data class WakeSetting(
     val scheduledWakes: List<ScheduledWake> = emptyList(),
 )
+
+private const val MAX_WAKE_EXECUTION_DETAIL_LENGTH = 240
+
+/**
+ * Update an existing plan's attempt without treating alarm delivery as a successful reply. A new
+ * attempt must be explicitly started (or fail to start) for the currently scheduled occurrence;
+ * afterAlarm authoritatively resets execution when the occurrence is actually consumed.
+ *
+ * Callers must pass generic diagnostics, never prompts, request bodies, credentials or model text.
+ */
+internal fun WakeSetting.withWakeExecution(
+    id: String,
+    scheduledAtMillis: Long,
+    status: ScheduledWakeExecutionStatus,
+    nowMillis: Long,
+    conversationId: String? = null,
+    detail: String? = null,
+): WakeSetting {
+    if (scheduledAtMillis <= 0L || nowMillis < 0L) return this
+    var changed = false
+    val updatedWakes = scheduledWakes.map { wake ->
+        if (wake.id != id) return@map wake
+        val previous = wake.execution
+        val sameAttempt = previous?.scheduledAtMillis == scheduledAtMillis
+        if (previous != null && scheduledAtMillis < previous.scheduledAtMillis) return@map wake
+        if (sameAttempt) {
+            requireNotNull(previous)
+            // A failed duplicate dispatch says nothing about the service already running this attempt.
+            if (status == ScheduledWakeExecutionStatus.START_FAILED && previous.status != status) return@map wake
+            // A late progress/failure callback cannot replace a saved terminal result.
+            if (previous.status.isTerminal && previous.status != status) return@map wake
+            if (nowMillis < previous.updatedAtMillis && !status.isTerminal) return@map wake
+            if (previous.status.isTerminal && nowMillis < previous.updatedAtMillis) return@map wake
+        } else {
+            // Legacy consumed one-time records have no known result; never invent one.
+            if (previous == null && wake.repeat == WakeRepeat.ONCE && wake.lastTriggeredAtMillis != 0L) {
+                return@map wake
+            }
+            if (scheduledAtMillis != wake.triggerAtMillis) return@map wake
+            if (status != ScheduledWakeExecutionStatus.STARTED &&
+                status != ScheduledWakeExecutionStatus.START_FAILED
+            ) return@map wake
+        }
+        val execution = ScheduledWakeExecution(
+            status = status,
+            scheduledAtMillis = scheduledAtMillis,
+            updatedAtMillis = if (sameAttempt) {
+                maxOf(nowMillis, requireNotNull(previous).updatedAtMillis)
+            } else {
+                nowMillis
+            },
+            conversationId = conversationId?.takeIf { it.isNotBlank() }
+                ?: previous?.conversationId?.takeIf { sameAttempt },
+            detail = safeWakeExecutionDetail(detail)
+                ?: previous?.takeIf { sameAttempt && it.status == status }?.detail,
+        )
+        if (execution == previous) wake else wake.copy(execution = execution).also { changed = true }
+    }
+    return if (changed) copy(scheduledWakes = updatedWakes) else this
+}
+
+private fun safeWakeExecutionDetail(value: String?): String? {
+    if (value == null) return null
+    return buildString {
+        for (character in value) {
+            if (length >= MAX_WAKE_EXECUTION_DETAIL_LENGTH) break
+            append(if (character.isISOControl()) ' ' else character)
+        }
+    }.trim().takeIf { it.isNotBlank() }
+}
 
 internal fun scheduledWakePrompt(customPrompt: String?): String =
     customPrompt?.takeIf { it.isNotBlank() } ?: DEFAULT_SCHEDULED_WAKE_PROMPT
@@ -125,6 +244,14 @@ internal fun ScheduledWake.afterAlarm(
             if (scheduledAtMillis <= lastTriggeredAtMillis && nowMillis >= lastTriggeredAtMillis) return null
         }
     }
-    return copy(lastTriggeredAtMillis = nowMillis, lastTriggeredDate = today)
+    return copy(
+        lastTriggeredAtMillis = nowMillis,
+        lastTriggeredDate = today,
+        execution = ScheduledWakeExecution(
+            status = ScheduledWakeExecutionStatus.STARTED,
+            scheduledAtMillis = scheduledAtMillis,
+            updatedAtMillis = nowMillis,
+        ),
+    )
         .rescheduled(nowMillis, zone)
 }

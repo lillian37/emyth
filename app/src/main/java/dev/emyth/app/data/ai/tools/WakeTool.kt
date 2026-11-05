@@ -15,6 +15,7 @@ import dev.emyth.app.data.datastore.rescheduled
 import dev.emyth.app.data.service.ScheduledWakeScheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -98,7 +99,9 @@ fun createScheduleWakeTool(context: Context): Tool = Tool(
 
 fun createListWakesTool(context: Context): Tool = Tool(
     name = "list_wakes",
-    description = "列出自主唤醒计划，包括重复方式、每日时刻、下次时间，以及当前的唤醒备注和提示词。",
+    description = "列出自主唤醒计划、备注、提示词和最近执行状态。" +
+        "pending 和 last_triggered_at 只反映调度，不能证明模型已回复；" +
+        "execution.status=completed 才表示回复已生成并保存，不保证通知已送达。",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = { _ ->
         try {
@@ -120,12 +123,38 @@ fun createListWakesTool(context: Context): Tool = Tool(
                         put("prompt_customized", !wake.prompt.isNullOrBlank())
                         put("pending", wake.isPending(now))
                         if (wake.lastTriggeredAtMillis > 0L) put("last_triggered_at", wake.lastTriggeredAtMillis)
+                        val execution = wake.execution
+                        if (execution != null) {
+                            putJsonObject("execution") {
+                                put("status", execution.status.value)
+                                put("status_label", execution.status.label)
+                                put("scheduled_at", execution.scheduledAtMillis)
+                                put("updated_at", execution.updatedAtMillis)
+                                execution.conversationId?.let { put("conversation_id", it) }
+                                execution.detail?.let { detail ->
+                                    val safeDetail = detail.filterNot { it.isISOControl() && it != '\n' }
+                                        .trim().take(240)
+                                    if (safeDetail.isNotEmpty()) put("detail", safeDetail)
+                                }
+                            }
+                        } else if (wake.lastTriggeredAtMillis > 0L) {
+                            putJsonObject("execution") {
+                                put("status", "unknown")
+                                put("status_label", "无法确认")
+                                put("detail", "旧记录只保存了调度触发时间，无法确认是否生成并保存回复")
+                            }
+                        } else {
+                            put("execution", JsonNull)
+                        }
                     })
                 }
             }
             listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", true)
                 put("count", wakes.size)
+                put("status_note", "pending 和 last_triggered_at 只反映调度，不能证明回复成功。" +
+                    "execution 是最近记录的执行阶段，不是实时连接健康状态，非终态不代表当前仍在线。" +
+                    "只有 execution.status=completed 表示回复已生成并保存；通知是否送达需另行确认。")
                 put("wakes", arr)
             }.toString()))
         } catch (e: CancellationException) {

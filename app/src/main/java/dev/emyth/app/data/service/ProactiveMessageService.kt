@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -92,6 +93,7 @@ import dev.emyth.app.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import dev.emyth.app.data.datastore.ProactiveMessageSetting
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.datastore.ScheduledWakeExecutionStatus
 import dev.emyth.app.data.datastore.scheduledWakePrompt
 import dev.emyth.app.data.event.AppEvent
 import dev.emyth.app.data.event.AppEventBus
@@ -525,9 +527,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
         val isFromDeviceEvent = deviceEventContext != null
-        val wakeNote = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_NOTE)
-        val wakePrompt = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_PROMPT)
-        val isScheduledWake = wakeNote != null
+        val scheduledWakeId = intent?.getStringExtra(ScheduledWakeScheduler.EXTRA_WAKE_ID)
+        val scheduledAt = intent?.getLongExtra(ScheduledWakeScheduler.EXTRA_TRIGGER_AT, 0L) ?: 0L
+        val legacyWakeNote = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_NOTE)
+        val legacyWakePrompt = intent?.getStringExtra(EXTRA_SCHEDULED_WAKE_PROMPT)
+        val isScheduledWake = scheduledWakeId != null || legacyWakeNote != null
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
         }
@@ -536,20 +540,55 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             .setSmallIcon(dev.emyth.app.R.drawable.small_icon)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_MIN)
             .build()
-        startForeground(20001, notification)
+        val foregroundAttempt = runCatching { startForeground(20001, notification) }
 
         activeRuns.start(startId)
         // Acquire before handing work to IO: the receiver/Worker may release its handoff lock
         // as soon as onStartCommand returns, while a foreground service alone does not keep CPU on.
-        val wakeLockAttempt = runCatching { acquireRunWakeLock() }
+        val wakeLockAttempt = runCatching {
+            foregroundAttempt.getOrThrow()
+            acquireRunWakeLock()
+        }
         serviceScope.launch {
             var conversationId: kotlin.uuid.Uuid? = null
             var referenceAcquired = false
             val runWakeLock = wakeLockAttempt.getOrNull()
             val ownedMessageIds = mutableSetOf<Uuid>()
             var interruption: String? = null
+            var ownsScheduledWake = false
+            var wakeOutcome: ScheduledWakeExecutionStatus? = null
+            var wakeDetail: String? = null
+
+            suspend fun recordWake(status: ScheduledWakeExecutionStatus, detail: String? = null) {
+                if (!ownsScheduledWake || scheduledWakeId == null) return
+                try {
+                    withTimeout(3_000L) {
+                        ScheduledWakeScheduler(this@ProactiveMessageTriggerService, settingsStore).recordExecution(
+                            scheduledWakeId, scheduledAt, status, conversationId?.toString(), detail,
+                        )
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    Log.w(TAG, "Timed out recording scheduled wake stage", e)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to record scheduled wake stage", e)
+                }
+            }
+
             try {
                 wakeLockAttempt.getOrThrow()
+                val acceptedWake = if (scheduledWakeId != null) {
+                    // Consume/rearm only after synchronous FGS + WakeLock acquisition.
+                    // The scheduler atomically rejects duplicate/obsolete alarm deliveries.
+                    ScheduledWakeScheduler(this@ProactiveMessageTriggerService, settingsStore)
+                        .onAlarm(scheduledWakeId, scheduledAt) ?: return@launch
+                } else null
+                ownsScheduledWake = acceptedWake != null
+                val wakeNote = acceptedWake?.note ?: legacyWakeNote
+                val wakePrompt = acceptedWake?.prompt ?: legacyWakePrompt
+                recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在读取聊天配置")
                 val settings = settingsStore.settingsFlow.first()
                 val proactiveSetting = settings.proactiveMessageSetting
 
@@ -595,9 +634,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
 
                 if (model == null) {
-                    Log.e(ProactiveMessageService.TAG, "No model found for proactive message")
-                    ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
-                    return@launch
+                    throw IllegalStateException("未找到此助手的聊天模型，无法生成后台消息")
                 }
 
                 // 找到最近的对话
@@ -630,10 +667,20 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 抢占生成权：尝试把当前协程的 Job 注册进 ConversationSession。
                 // 这一步对所有触发源（含 isForceTrigger / 激进模式设备事件）一视同仁，是并发安全的核心。
-                // 如果当前已有生成在跑（正常聊天或另一路主动消息），直接放弃本次触发，不排队等待、不重试。
-                // 理由：等对方生成结束后，上下文（用户可能已在聊别的话题）大概率已过时，硬等没有意义。
+                // 普通主动消息仍在繁忙时跳过；明确设置的定时唤醒则等待当前任务及收尾结束。
+                // 等待发生在请求模型之前，不重放任何已经执行的模型或工具操作。
                 val myJob = coroutineContext[Job]
-                if (myJob == null || !chatService.getOrCreateSession(conversationId).tryClaimGeneration(myJob)) {
+                    ?: throw IllegalStateException("后台生成任务不存在")
+                val session = chatService.getOrCreateSession(conversationId)
+                val claimed = if (isScheduledWake) {
+                    recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在等待当前会话的回复结束（最多两分钟）")
+                    session.claimGenerationWhenAvailable(myJob)
+                } else {
+                    session.tryClaimGeneration(myJob)
+                }
+                if (!claimed) {
+                    wakeOutcome = ScheduledWakeExecutionStatus.BUSY
+                    wakeDetail = "当前会话持续有消息在生成，等待两分钟后结束本次唤醒，未请求模型"
                     Log.d(
                         TAG,
                         "Skip proactive trigger: session $conversationId already generating " +
@@ -667,16 +714,19 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
 
                 // 如果有设备事件上下文（激进模式），使用它替代常规上下文；否则使用常规上下文
-                val contextStr = if (isFromDeviceEvent && deviceEventContext != null) {
-                    settings.builtinPromptSetting.proactiveDeviceContext(deviceEventContext)
-                } else {
-                    val base = proactiveMessageService.buildProactiveContext(
-                        this@ProactiveMessageTriggerService, settings
-                    )
-                    if (isScheduledWake) {
-                        settings.builtinPromptSetting.proactiveScheduledContext(base, wakeNote)
+                recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在获取唤醒上下文")
+                val contextStr = prepareProactiveStep("获取唤醒上下文") {
+                    if (isFromDeviceEvent && deviceEventContext != null) {
+                        settings.builtinPromptSetting.proactiveDeviceContext(deviceEventContext)
                     } else {
-                        base
+                        val base = proactiveMessageService.buildProactiveContext(
+                            this@ProactiveMessageTriggerService, settings
+                        )
+                        if (isScheduledWake) {
+                            settings.builtinPromptSetting.proactiveScheduledContext(base, wakeNote)
+                        } else {
+                            base
+                        }
                     }
                 }
 
@@ -697,6 +747,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     jumpThreshold = proactiveSetting.jumpIdleThresholdMinutes,
                     isFromDeviceEvent = isFromDeviceEvent,
                     deviceEventContext = contextStr,
+                    isScheduledWake = isScheduledWake,
                 )
 
                 // user message 只放简短指令（上下文已在系统提示词中）
@@ -712,32 +763,34 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
 
                 // 转换器可能新增时间提醒、模式或世界书消息；必须保留完整结果，不能只取第一条。
-                val messages = prepareProactiveMessages(
-                    systemPrompt = systemPrompt,
-                    historyMessages = historyMessages,
-                    userMessage = userMessage,
-                ) { input ->
-                    input.transforms(
-                        transformers = inputTransformers + templateTransformer,
-                        context = this@ProactiveMessageTriggerService,
-                        model = model,
-                        assistant = assistant,
-                        settings = settings,
-                    )
+                recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在应用聊天设置")
+                val messages = prepareProactiveStep("应用聊天设置") {
+                    prepareProactiveMessages(
+                        systemPrompt = systemPrompt,
+                        historyMessages = historyMessages,
+                        userMessage = userMessage,
+                    ) { input ->
+                        input.transforms(
+                            transformers = inputTransformers + templateTransformer,
+                            context = this@ProactiveMessageTriggerService,
+                            model = model,
+                            assistant = assistant,
+                            settings = settings,
+                        )
+                    }
                 }
 
                 // 直接调用 AI API 生成消息
                 val providerSetting = model.findProvider(settings.providers)
                 if (providerSetting == null) {
-                    Log.e(ProactiveMessageService.TAG, "No provider found for proactive message")
-                    ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
-                    return@launch
+                    throw IllegalStateException("未找到聊天模型的服务商配置，无法生成后台消息")
                 }
 
                 val providerImpl = providerManager.getProviderByType(providerSetting)
 
                 // 构建工具列表（与 ChatService 保持一致）
-                val tools = buildTools(settings, assistant, model)
+                recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在准备可用工具")
+                val tools = prepareProactiveStep("准备可用工具") { buildTools(settings, assistant, model) }
 
                 // 主动消息场景：支持工具调用，但限制最大步数
                 // temperature 不强制默认 0.8f，保持与 GenerationHandler 一致（assistant.temperature 为 null 时不传），
@@ -778,6 +831,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     assistant = assistant,
                     settings = settings,
                     ownedMessageIds = ownedMessageIds,
+                    onStage = { stage -> recordWake(stage) },
                 )
 
                 // 提取AI消息
@@ -808,7 +862,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls, shouldJump=$shouldJump")
 
-                if (rawText.contains("[PASS]")) {
+                if (rawText.trim().equals("[PASS]", ignoreCase = true)) {
                     // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
                     val aiId = aiMessage.id
@@ -825,6 +879,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         )
                         chatService.saveConversation(conversationId, chatService.getConversationFlow(conversationId).value)
                     }
+                    wakeOutcome = ScheduledWakeExecutionStatus.SKIPPED
+                    wakeDetail = "模型返回了完整的 [PASS]，本次未发送回复"
                 } else {
                     // An EOF containing only reasoning/tool results is not an intentional skip.
                     // Preserve those checkpoints and report the incomplete reply instead of deleting them.
@@ -835,6 +891,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     saveProactiveMessage(
                         settings, assistant, conversationId, conversation
                     )
+                    wakeOutcome = ScheduledWakeExecutionStatus.COMPLETED
+                    wakeDetail = "回复已生成并保存"
+                    recordWake(ScheduledWakeExecutionStatus.COMPLETED, wakeDetail)
                     // 同步保存 AI 主动消息 / 激进模式回复到外置记忆库（Supabase）
                     // 保证日记总结（DiarySummaryService 只读 Supabase chat_messages 表）和记忆召回能看到这部分内容
                     try {
@@ -899,6 +958,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                 }
             } catch (e: CancellationException) {
+                if (wakeOutcome != ScheduledWakeExecutionStatus.COMPLETED) {
+                    wakeOutcome = ScheduledWakeExecutionStatus.INTERRUPTED
+                    wakeDetail = if (destroyed) "后台服务停止，本次生成中断" else "本次生成被新消息或停止操作中断"
+                }
                 interruption = if (destroyed) "后台服务已停止，生成已中断" else "生成已被新消息或停止操作中断"
                 // 协程被取消（通常是用户发了新消息，sendMessage 里 session.getJob()?.cancel() 触发），
                 // 这是正常情况，不应当成错误。打印 debug 日志并重新抛出，遵循 Kotlin 协程取消传播语义。
@@ -911,6 +974,28 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
                 throw e
             } catch (e: Exception) {
+                if (scheduledWakeId != null && wakeLockAttempt.isFailure) {
+                    try {
+                        withTimeout(3_000L) {
+                            ScheduledWakeScheduler(this@ProactiveMessageTriggerService, settingsStore).recordExecution(
+                                scheduledWakeId, scheduledAt, ScheduledWakeExecutionStatus.START_FAILED,
+                                detail = "后台服务或唤醒保护未能启动（${e.javaClass.simpleName}）",
+                            )
+                        }
+                    } catch (failure: Exception) {
+                        Log.w(TAG, "Failed to record service startup failure", failure)
+                    }
+                }
+                if (wakeOutcome == ScheduledWakeExecutionStatus.COMPLETED) {
+                    wakeDetail = "回复已保存，但后续通知或同步未能完成"
+                } else {
+                    wakeOutcome = ScheduledWakeExecutionStatus.FAILED
+                    wakeDetail = when (e) {
+                        is ProactiveStreamTimeoutException -> e.message
+                        is ProactivePreparationTimeoutException -> e.message
+                        else -> "后台生成未完成（${e.javaClass.simpleName}），请查看聊天页面的错误详情"
+                    }
+                }
                 interruption = if (e is ProactiveStreamTimeoutException) {
                     e.message ?: "后台请求长时间没有进展，生成已中断"
                 } else {
@@ -931,6 +1016,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 定时链断裂。NonCancellable 保证这段收尾逻辑跑完。
                 withContext(NonCancellable) {
                     try {
+                        if (ownsScheduledWake) {
+                            recordWake(
+                                wakeOutcome ?: ScheduledWakeExecutionStatus.INTERRUPTED,
+                                wakeDetail ?: "本次唤醒未完成，未确认已保存回复",
+                            )
+                        }
                         try {
                             withTimeout(CLEANUP_TIMEOUT_MS) {
                                 conversationId?.let { cid ->
@@ -952,7 +1043,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to finalize proactive generation", e)
                         }
-                        if (!isFromDeviceEvent) {
+                        if (!isFromDeviceEvent && wakeLockAttempt.isSuccess) {
                             try {
                                 withTimeout(RESCHEDULE_TIMEOUT_MS) {
                                     val currentSettings = settingsStore.settingsFlow.first()
@@ -984,7 +1075,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
      * 构建系统提示词，包含记忆等内容
      * isFromDeviceEvent: 是否由激进模式设备事件触发
      */
-    private suspend fun buildSystemPrompt(assistant: Assistant, settings: Settings, idleMinutes: Int = 0, jumpThreshold: Int = 120, isFromDeviceEvent: Boolean = false, deviceEventContext: String? = null): String {
+    private suspend fun buildSystemPrompt(
+        assistant: Assistant,
+        settings: Settings,
+        idleMinutes: Int = 0,
+        jumpThreshold: Int = 120,
+        isFromDeviceEvent: Boolean = false,
+        deviceEventContext: String? = null,
+        isScheduledWake: Boolean = false,
+    ): String {
         return buildString {
             // 基础系统提示词
             val effectiveSystemPrompt = if (assistant.allowConversationSystemPrompt) {
@@ -1030,8 +1129,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     appendLine(deviceEventContext)
                 }
             } else {
-                // 常规主动消息：上下文也注入系统提示词最后面（和激进模式一样）
-                appendProactivePrompt(
+                // 定时唤醒使用计划自身的提示词；不要注入允许随机主动消息跳过的规则。
+                if (!isScheduledWake) appendProactivePrompt(
                     settings.builtinPromptSetting.text(
                         ProactiveBuiltinPrompts.timerTriggerRules,
                         mapOf("idle_minutes" to idleMinutes.toString()),
@@ -1252,6 +1351,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         assistant: Assistant,
         settings: Settings,
         ownedMessageIds: MutableSet<Uuid>,
+        onStage: suspend (ScheduledWakeExecutionStatus) -> Unit,
     ): Triple<List<UIMessage>, Boolean, Boolean> {
         var messages = initialMessages.toMutableList()
         var hasToolCalls = false
@@ -1268,6 +1368,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             // 流式调用 AI（替代非流式 generateText，兼容 thinking 模型）
             var streamMessages = messages.toList()
+            var streamingRecorded = false
+            onStage(ScheduledWakeExecutionStatus.REQUESTING)
             providerImpl.streamText(
                 providerSetting = providerSetting,
                 messages = messages,
@@ -1296,6 +1398,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     currentAiMessage,
                     allowAppend = publishedMessageIds.add(currentAiMessage.id),
                 )
+                if (!streamingRecorded) {
+                    onStage(ScheduledWakeExecutionStatus.STREAMING)
+                    streamingRecorded = true
+                }
             }
 
             // 流式结束，更新 messages
@@ -1344,6 +1450,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             // 有工具调用
             hasToolCalls = true
+            onStage(ScheduledWakeExecutionStatus.RUNNING_TOOLS)
             Log.d(TAG, "Tool calls detected: ${toolCalls.size}")
 
             // 执行工具（后台模式下自动执行，不需要用户审批）

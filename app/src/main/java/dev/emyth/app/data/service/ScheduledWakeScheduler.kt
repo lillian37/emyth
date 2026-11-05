@@ -14,11 +14,13 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import dev.emyth.app.data.datastore.ScheduledWake
+import dev.emyth.app.data.datastore.ScheduledWakeExecutionStatus
 import dev.emyth.app.data.datastore.SettingsStore
 import dev.emyth.app.data.datastore.WakeRepeat
 import dev.emyth.app.data.datastore.WakeSetting
 import dev.emyth.app.data.datastore.afterAlarm
 import dev.emyth.app.data.datastore.rescheduled
+import dev.emyth.app.data.datastore.withWakeExecution
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -117,8 +119,30 @@ class ScheduledWakeScheduler(context: Context, private val store: SettingsStore)
                     Log.e(TAG, "Failed to rearm daily wake ${wake.id}", e)
                 }
             }
-            triggered?.takeIf { it.repeat == WakeRepeat.ONCE }?.let(::cancelAlarm)
+            triggered?.takeIf { it.repeat == WakeRepeat.ONCE }?.let { wake ->
+                try {
+                    cancelAlarm(wake)
+                } catch (e: Exception) {
+                    // Consumption is already durable. Failure to remove an old PendingIntent
+                    // must not discard the accepted request; afterAlarm still rejects duplicates.
+                    Log.w(TAG, "Failed to remove consumed alarm ${wake.id}", e)
+                }
+            }
             triggered
+        }
+    }
+
+    suspend fun recordExecution(
+        id: String,
+        scheduledAtMillis: Long,
+        status: ScheduledWakeExecutionStatus,
+        conversationId: String? = null,
+        detail: String? = null,
+    ) = mutex.withLock {
+        store.updateWakeSetting { setting ->
+            setting.withWakeExecution(
+                id, scheduledAtMillis, status, System.currentTimeMillis(), conversationId, detail,
+            )
         }
     }
 

@@ -9,12 +9,15 @@ package dev.emyth.app.service
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 import dev.emyth.app.data.model.Conversation
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
@@ -121,6 +124,33 @@ class ConversationSession(
         if (!newJob.isActive || isGenerating) return@synchronized false
         installJobLocked(newJob)
         true
+    }
+
+    /**
+     * Waits briefly for an existing generation without interrupting it. Only a scheduled wake
+     * should use this queue; ordinary proactive triggers still use tryClaimGeneration directly.
+     * Register the caller's job, never the temporary child created by withTimeoutOrNull.
+     */
+    suspend fun claimGenerationWhenAvailable(job: Job, timeoutMillis: Long = 120_000L): Boolean {
+        currentCoroutineContext().ensureActive()
+        val claimed = withTimeoutOrNull(timeoutMillis) {
+            while (job.isActive) {
+                currentCoroutineContext().ensureActive()
+                val owner = getJob()
+                if (owner === job) return@withTimeoutOrNull true
+                if (owner != null && !owner.isCompleted) {
+                    // Also wait for a cancelled owner's finalizer. Never hold claimLock across
+                    // join, and recheck ownership afterwards because a new request may replace it.
+                    owner.join()
+                } else if (tryClaimGeneration(job)) {
+                    return@withTimeoutOrNull true
+                }
+            }
+            false
+        } ?: false
+        // A caller's deadline/cancellation must propagate even if it races our own timeout.
+        currentCoroutineContext().ensureActive()
+        return claimed
     }
 
     /** Called under claimLock by both user replacements and background claims. */

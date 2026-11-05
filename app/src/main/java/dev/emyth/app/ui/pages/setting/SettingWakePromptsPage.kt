@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.emyth.app.data.datastore.DEFAULT_SCHEDULED_WAKE_PROMPT
 import dev.emyth.app.data.datastore.ScheduledWake
+import dev.emyth.app.data.datastore.ScheduledWakeExecutionStatus
 import dev.emyth.app.data.datastore.SettingsStore
 import dev.emyth.app.data.datastore.WakeRepeat
 import dev.emyth.app.data.datastore.effectivePrompt
@@ -130,7 +131,8 @@ fun SettingWakePromptsPage() {
             item {
                 Text(
                     "这里展示 AI 通过工具设置的唤醒计划。你可以编辑唤醒备注和提示词；" +
-                        "创建、调整时间和取消计划，请在聊天中与 AI 商量后由它调用工具。",
+                        "创建、调整时间和取消计划，请在聊天中与 AI 商量后由它调用工具。" +
+                        "调度触发不代表回复成功，下面会单独显示最近的执行结果。",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -246,8 +248,57 @@ private fun WakePromptCard(
             )
             if (!pending) {
                 Text(
-                    if (wake.lastTriggeredAtMillis > 0L) "这条一次性计划已执行" else "已到计划时间",
+                    if (wake.lastTriggeredAtMillis > 0L) "这条一次性计划已触发调度" else "已到计划时间",
                     style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (wake.lastTriggeredAtMillis > 0L) {
+                Text(
+                    "最近调度触发：" + formatter.format(Instant.ofEpochMilli(wake.lastTriggeredAtMillis)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val execution = wake.execution
+            if (execution != null) {
+                Text(
+                    "最近执行：" + if (execution.status == ScheduledWakeExecutionStatus.COMPLETED) {
+                        "已生成并保存回复"
+                    } else {
+                        execution.status.label
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    "状态更新：" + formatter.format(Instant.ofEpochMilli(execution.updatedAtMillis)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!execution.status.isTerminal) {
+                    Text(
+                        "这是最近记录的阶段，不代表当前连接仍在线。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                execution.detail?.let { detail ->
+                    val safeDetail = detail.filterNot { it.isISOControl() && it != '\n' }.trim().take(240)
+                    if (safeDetail.isNotEmpty()) {
+                        Text(safeDetail, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (execution.status == ScheduledWakeExecutionStatus.COMPLETED) {
+                    Text(
+                        "回复已保存；通知是否送达取决于系统通知设置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (wake.lastTriggeredAtMillis > 0L) {
+                Text(
+                    "执行结果：无法确认。旧记录只保存了调度触发时间，未记录回复是否生成。",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
