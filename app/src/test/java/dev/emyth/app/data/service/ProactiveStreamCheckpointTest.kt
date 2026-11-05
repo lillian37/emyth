@@ -4,6 +4,7 @@ import dev.emyth.app.data.ai.ProactiveStreamTimeoutException
 import dev.emyth.app.data.ai.guardProactiveStream
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CopyableThrowable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.awaitClose
@@ -45,7 +46,7 @@ class ProactiveStreamCheckpointTest {
 
     @Test
     fun anUpstreamFailureDrainsTheLatestSnapshotBeforeRethrowingTheSameFailure() = runTest {
-        val expected = IOException("connection lost")
+        val expected = TestIOException("connection lost")
         val checkpoints = mutableListOf<String>()
         val failure = runCatching {
             flow {
@@ -65,7 +66,7 @@ class ProactiveStreamCheckpointTest {
 
     @Test
     fun aFailureBeforeAnyOutputRemainsTheOriginalFailure() = runTest {
-        val expected = IOException("not connected")
+        val expected = TestIOException("not connected")
         val checkpoints = mutableListOf<String>()
         val failure = runCatching {
             flow<String> { throw expected }
@@ -80,22 +81,29 @@ class ProactiveStreamCheckpointTest {
     @Test
     fun aStreamIdleTimeoutStillPreservesTheLastMergedPartialOutput() = runTest {
         val checkpoints = mutableListOf<String>()
+        val checkpointTimes = mutableListOf<Long>()
         var transportClosed = false
+        var transportClosedAt: Long? = null
         val failure = runCatching {
             flow {
                 try {
                     emit("partial")
-                    delay(100)
+                    // Make progress before the idle deadline; the exact boundary may time out first.
+                    delay(50)
                     emit("partial reasoning preserved")
                     awaitCancellation()
                 } finally {
                     transportClosed = true
+                    transportClosedAt = currentTime
                 }
             }.guardProactiveStream(
                 firstProgressTimeout = 1_000.milliseconds,
                 idleTimeout = 100.milliseconds,
                 totalTimeout = 10_000.milliseconds,
-            ).checkpointProactiveSnapshots(500).collect { checkpoints += it }
+            ).checkpointProactiveSnapshots(500).collect {
+                checkpoints += it
+                checkpointTimes += currentTime
+            }
         }.exceptionOrNull()
 
         assertTrue(failure is ProactiveStreamTimeoutException)
@@ -105,6 +113,8 @@ class ProactiveStreamCheckpointTest {
         )
         assertEquals("partial reasoning preserved", checkpoints.last())
         assertTrue(transportClosed)
+        assertEquals(150L, transportClosedAt)
+        assertEquals(listOf(0L, 500L), checkpointTimes)
     }
 
     @Test
@@ -135,7 +145,7 @@ class ProactiveStreamCheckpointTest {
 
     @Test
     fun downstreamPersistenceFailureDoesNotFlushQueuedSnapshots() = runTest {
-        val expected = IOException("cannot save")
+        val expected = TestIOException("cannot save")
         val checkpoints = mutableListOf<String>()
         var transportClosed = false
         val failure = runCatching {
@@ -174,5 +184,10 @@ class ProactiveStreamCheckpointTest {
             }.exceptionOrNull()
             assertTrue(failure is IllegalArgumentException)
         }
+    }
+
+    // Preserve strict exception-identity checks without coroutine debug copies changing the fixture.
+    private class TestIOException(message: String) : IOException(message), CopyableThrowable<TestIOException> {
+        override fun createCopy(): TestIOException? = null
     }
 }

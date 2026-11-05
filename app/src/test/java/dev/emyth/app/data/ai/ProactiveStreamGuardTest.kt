@@ -2,6 +2,7 @@ package dev.emyth.app.data.ai
 
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CopyableThrowable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.awaitClose
@@ -170,7 +171,7 @@ class ProactiveStreamGuardTest {
 
     @Test
     fun upstreamErrorsRemainTheOriginalErrors() = runTest {
-        val expected = IOException("connection failed")
+        val expected = TestIOException("connection failed")
         val received = mutableListOf<String>()
         val failure = runCatching {
             flow {
@@ -213,7 +214,7 @@ class ProactiveStreamGuardTest {
     @Test
     fun downstreamFailureAlsoClosesTheTransport() = runTest {
         var closed = false
-        val expected = IOException("cannot persist message")
+        val expected = TestIOException("cannot persist message")
         val failure = runCatching {
             callbackFlow {
                 trySend("reasoning")
@@ -247,5 +248,10 @@ class ProactiveStreamGuardTest {
         assertFalse(failure is CancellationException)
         assertEquals(phase, (failure as ProactiveStreamTimeoutException).phase)
         assertTrue(failure.message.orEmpty().isNotBlank())
+    }
+
+    // Keep identity assertions meaningful when coroutine debug stack-trace recovery is enabled.
+    private class TestIOException(message: String) : IOException(message), CopyableThrowable<TestIOException> {
+        override fun createCopy(): TestIOException? = null
     }
 }
