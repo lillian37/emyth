@@ -68,11 +68,12 @@ fun SettingWakePromptsPage() {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val now = System.currentTimeMillis()
     val zone = ZoneId.systemDefault()
-    val formatter = remember(zone) { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(zone) }
+    val formatter = remember(zone) { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(zone) }
     val wakes = settings.wakeSetting.scheduledWakes
     val orderedWakes = remember(wakes) {
         val currentTime = System.currentTimeMillis()
-        wakes.sortedWith(compareBy<ScheduledWake> { !it.isPending(currentTime) }.thenBy { it.triggerAtMillis })
+        val (pendingWakes, pastWakes) = wakes.partition { it.isPending(currentTime) }
+        pendingWakes.sortedBy { it.triggerAtMillis } + pastWakes.sortedByDescending { it.triggerAtMillis }
     }
 
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }

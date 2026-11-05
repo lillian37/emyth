@@ -37,6 +37,7 @@ import kotlinx.datetime.toInstant
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import android.os.Build
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -892,52 +893,22 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         settings, assistant, conversationId, conversation
                     )
                     wakeOutcome = ScheduledWakeExecutionStatus.COMPLETED
-                    wakeDetail = "回复已生成并保存"
+                    // Notify as soon as the local reply is durable. Optional remote-memory IO
+                    // must not delay the user's notification or hide a rejected notification.
+                    wakeDetail = notifySavedProactiveReply(conversationId, assistant.name.ifBlank { "AI" }, replyText)
                     recordWake(ScheduledWakeExecutionStatus.COMPLETED, wakeDetail)
-                    // 同步保存 AI 主动消息 / 激进模式回复到外置记忆库（Supabase）
-                    // 保证日记总结（DiarySummaryService 只读 Supabase chat_messages 表）和记忆召回能看到这部分内容
-                    try {
-                        val externalMemoryConfigs = settings.externalMemories.filter {
-                            it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
-                        }
-                        if (externalMemoryConfigs.isNotEmpty() && replyText.isNotBlank()) {
-                            kotlinx.coroutines.coroutineScope {
-                                externalMemoryConfigs.forEach { config ->
-                                    launch {
-                                        runCatching {
-                                            val service = ExternalMemoryService(config)
-                                            service.saveMessage(
-                                                assistantId = assistant.id.toString(),
-                                                conversationId = conversationId.toString(),
-                                                role = "assistant",
-                                                content = replyText,
-                                            )
-                                        }.onFailure {
-                                            if (it is CancellationException) throw it
-                                            Log.w(
-                                                ProactiveMessageService.TAG,
-                                                "Failed to save proactive message to external memory ${config.name}",
-                                                it
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(ProactiveMessageService.TAG, "Failed to save proactive message to external memory", e)
-                    }
-                    showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
                     // 悬浮球提醒（作为通知之上的增强层；无 overlay 权限时由 FloatingBubbleService 兜底跳过）
                     if (proactiveSetting.floatingBubbleEnabled) {
-                        FloatingBubbleService.show(
-                            context = this@ProactiveMessageTriggerService,
-                            conversationId = conversationId.toString(),
-                            senderName = assistant.name.ifBlank { "AI" },
-                            avatar = assistant.avatar,
-                        )
+                        try {
+                            FloatingBubbleService.show(
+                                context = this@ProactiveMessageTriggerService,
+                                conversationId = conversationId.toString(),
+                                senderName = assistant.name.ifBlank { "AI" },
+                                avatar = assistant.avatar,
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to display proactive floating bubble", e)
+                        }
                     }
                     // 强制跳转屏幕到聊天界面（方案 A：普通拉起前台）
                     if (shouldJump) {
@@ -955,6 +926,41 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         } catch (e: Exception) {
                             Log.e(TAG, "Force jump failed", e)
                         }
+                    }
+                    // 同步保存 AI 主动消息 / 激进模式回复到外置记忆库（Supabase）
+                    // 保证日记总结（DiarySummaryService 只读 Supabase chat_messages 表）和记忆召回能看到这部分内容
+                    try {
+                        val externalMemoryConfigs = settings.externalMemories.filter {
+                            it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
+                        }
+                        if (externalMemoryConfigs.isNotEmpty() && replyText.isNotBlank()) {
+                            kotlinx.coroutines.coroutineScope {
+                                externalMemoryConfigs.forEach { config ->
+                                    launch {
+                                        runCatching {
+                                            val service = ExternalMemoryService(config)
+                                            service.saveMessage(
+                                                assistantId = assistant.id.toString(),
+                                                conversationId = conversationId.toString(),
+                                                role = "assistant",
+                                                content = replyText,
+                                            ).getOrThrow()
+                                        }.onFailure {
+                                            if (it is CancellationException) throw it
+                                            Log.w(
+                                                ProactiveMessageService.TAG,
+                                                "Failed to save proactive message to external memory ${config.name}",
+                                                it
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(ProactiveMessageService.TAG, "Failed to save proactive message to external memory", e)
                     }
                 }
             } catch (e: CancellationException) {
@@ -987,7 +993,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                 }
                 if (wakeOutcome == ScheduledWakeExecutionStatus.COMPLETED) {
-                    wakeDetail = "回复已保存，但后续通知或同步未能完成"
+                    wakeDetail = wakeDetail?.let { "$it；后续处理未完成" }
+                        ?: "回复已保存，但后续通知或同步未能完成"
                 } else {
                     wakeOutcome = ScheduledWakeExecutionStatus.FAILED
                     wakeDetail = when (e) {
@@ -1190,11 +1197,37 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         return conversationId
     }
 
+    private fun notifySavedProactiveReply(conversationId: Uuid, senderName: String, message: String): String {
+        val attemptedAt = java.time.LocalDateTime.now().format(
+            java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
+        )
+        val prefix = "回复已保存；$attemptedAt "
+        return try {
+            val manager = NotificationManagerCompat.from(this)
+            val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.getNotificationChannel(CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID)
+            } else null
+            when {
+                !manager.areNotificationsEnabled() -> prefix + "应用通知已被系统关闭，未提交提醒"
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && channel == null ->
+                    prefix + "聊天通知类别不存在，未提交提醒"
+                channel?.importance == android.app.NotificationManager.IMPORTANCE_NONE ->
+                    prefix + "聊天通知类别已关闭，未提交提醒"
+                showProactiveNotification(conversationId, senderName, message) ->
+                    prefix + "已向系统提交通知；锁屏展示仍取决于系统设置"
+                else -> prefix + "通知权限检查未通过，未提交提醒"
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to post proactive notification", e)
+            prefix + "提交通知失败（${e.javaClass.simpleName}）"
+        }
+    }
+
     private fun showProactiveNotification(
         conversationId: kotlin.uuid.Uuid,
         senderName: String,
         message: String
-    ) {
+    ): Boolean {
         val intent = Intent(this, RouteActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("conversationId", conversationId.toString())
@@ -1206,7 +1239,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        sendNotification(
+        return sendNotification(
             channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
             notificationId = 20002
         ) {
