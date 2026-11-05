@@ -59,6 +59,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
+import dev.emyth.app.data.ai.recoverOrphanedReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.common.android.Logging
 import dev.emyth.app.AppScope
@@ -372,27 +373,36 @@ class ChatService(
     // ---- 初始化对话 ----
 
     suspend fun initializeConversation(conversationId: Uuid) {
-        getOrCreateSession(conversationId) // 确保 session 存在
-        // 总是从数据库重新加载最新数据，确保能显示主动消息等新内容
-        val conversation = conversationRepo.getConversationById(conversationId)
-        if (conversation != null) {
-            updateConversation(conversationId, conversation)
-            // 只有当前选中助手与该对话的助手不一致时才写 DataStore，
-            // 避免每次打开/切换对话都无条件写入 SELECT_ASSISTANT 触发 settingsFlow 全量重组
-            val currentSettings = settingsStore.settingsFlow.value
-            if (currentSettings.assistantId != conversation.assistantId) {
-                settingsStore.updateAssistant(conversation.assistantId)
+        val session = getOrCreateSession(conversationId)
+        val conversation = session.saveMutex.withLock {
+            val loaded = conversationRepo.getConversationById(conversationId)
+            // A live stream may be ahead of its disk checkpoint. Reopening must not roll it back.
+            if (session.isGenerating) return@withLock loaded ?: session.state.value
+            if (loaded != null) {
+                val recovered = loaded.recoverOrphanedReasoning(
+                    at = kotlin.time.Clock.System.now(),
+                    hasActiveGeneration = session.isGenerating,
+                )
+                if (!session.isGenerating) {
+                    updateConversation(conversationId, recovered)
+                    if (recovered != loaded) saveConversation(conversationId, recovered)
+                }
+                recovered
+            } else {
+                val currentSettings = settingsStore.settingsFlowRaw.first()
+                val assistant = currentSettings.getCurrentAssistant()
+                val newConversation = Conversation.ofId(
+                    id = conversationId,
+                    assistantId = assistant.id,
+                    newConversation = true,
+                ).updateCurrentMessages(assistant.presetMessages)
+                if (!session.isGenerating) updateConversation(conversationId, newConversation)
+                newConversation
             }
-        } else {
-            // 新建对话, 并添加预设消息
-            val currentSettings = settingsStore.settingsFlowRaw.first()
-            val assistant = currentSettings.getCurrentAssistant()
-            val newConversation = Conversation.ofId(
-                id = conversationId,
-                assistantId = assistant.id,
-                newConversation = true
-            ).updateCurrentMessages(assistant.presetMessages)
-            updateConversation(conversationId, newConversation)
+        }
+        val currentSettings = settingsStore.settingsFlow.value
+        if (currentSettings.assistantId != conversation.assistantId) {
+            settingsStore.updateAssistant(conversation.assistantId)
         }
     }
 

@@ -90,14 +90,15 @@ class ConversationSession(
     }
 
     fun setJob(job: Job?) {
-        _generationJob.value?.cancel()
-        _generationJob.value = job
-        job?.invokeOnCompletion {
-            _generationJob.value = null
-            if (refCount.get() <= 0) {
-                scheduleIdleCheck()
-            }
+        val previous = synchronized(claimLock) {
+            val current = _generationJob.value
+            if (current === job) return
+            installJobLocked(job)
+            current
         }
+        // Publish the replacement before cancellation can run the old completion callback.
+        previous?.cancel()
+        if (job == null && refCount.get() <= 0) scheduleIdleCheck()
     }
 
     fun getJob(): Job? = _generationJob.value
@@ -117,30 +118,50 @@ class ConversationSession(
     private val claimLock = Any()
 
     fun tryClaimGeneration(newJob: Job): Boolean = synchronized(claimLock) {
-        if (isGenerating) return@synchronized false
-        setJob(newJob)
+        if (!newJob.isActive || isGenerating) return@synchronized false
+        installJobLocked(newJob)
         true
     }
 
+    /** Called under claimLock by both user replacements and background claims. */
+    private fun installJobLocked(job: Job?) {
+        cancelIdleCheck()
+        _generationJob.value = job
+        job?.invokeOnCompletion {
+            val cleared = synchronized(claimLock) {
+                _generationJob.compareAndSet(job, null)
+            }
+            if (cleared && refCount.get() <= 0) scheduleIdleCheck()
+        }
+    }
+
     private fun scheduleIdleCheck() {
-        idleCheckJob?.cancel()
-        idleCheckJob = scope.launch {
-            delay(IDLE_TIMEOUT_MS)
-            if (refCount.get() <= 0 && !isGenerating) {
-                onIdle(id)
+        synchronized(claimLock) {
+            if (refCount.get() > 0 || isGenerating) return
+            idleCheckJob?.cancel()
+            idleCheckJob = scope.launch {
+                delay(IDLE_TIMEOUT_MS)
+                if (refCount.get() <= 0 && !isGenerating) {
+                    onIdle(id)
+                }
             }
         }
     }
 
     private fun cancelIdleCheck() {
-        idleCheckJob?.cancel()
-        idleCheckJob = null
+        synchronized(claimLock) {
+            idleCheckJob?.cancel()
+            idleCheckJob = null
+        }
     }
 
     fun cleanup() {
-        _generationJob.value?.cancel()
-        _generationJob.value = null
-        idleCheckJob?.cancel()
-        idleCheckJob = null
+        val previous = synchronized(claimLock) {
+            val current = _generationJob.value
+            _generationJob.value = null
+            cancelIdleCheck()
+            current
+        }
+        previous?.cancel()
     }
 }

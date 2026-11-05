@@ -46,6 +46,7 @@ import kotlinx.coroutines.isActive
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
 import dev.emyth.app.R
+import dev.emyth.app.data.ai.proactiveInterruptionReason
 import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.data.model.AssistantAffectScope
 import dev.emyth.app.data.model.replaceRegexes
@@ -86,7 +87,7 @@ private class ReasoningState(
 @Composable
 private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<ReasoningState, Boolean> {
     val displaySettings = LocalDisplaySettings.current
-    val loading = reasoning.finishedAt == null
+    val loading = reasoning.finishedAt == null && reasoning.proactiveInterruptionReason() == null
     val scrollState = rememberScrollState()
  
     val state = remember(reasoning.createdAt) {
@@ -196,6 +197,7 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
     collapsedAdaptiveWidth: Boolean = false,
 ) {
     val (state, loading) = rememberReasoningState(reasoning)
+    val interruptionReason = reasoning.proactiveInterruptionReason()
     val thinkingTitle = reasoning.reasoning.extractThinkingTitle()
     val showThinkingTitle = loading && thinkingTitle != null
  
@@ -211,7 +213,13 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
             )
         },
         label = {
-            if (showThinkingTitle) {
+            if (interruptionReason != null) {
+                Text(
+                    text = "思考已中断",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            } else if (showThinkingTitle) {
                 ReasoningTitle(title = thinkingTitle!!)
             } else {
                 Text(
