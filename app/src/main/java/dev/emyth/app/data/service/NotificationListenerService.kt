@@ -71,17 +71,22 @@ class RikkaNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         dev.emyth.app.data.ai.tools.local.NotificationListenerHandle.connected = true
+        dev.emyth.app.data.tea.TeaOrderMonitor.onListenerConnected(this)
         // 服务连接时，获取所有活动通知
         refreshNotifications()
     }
 
     override fun onListenerDisconnected() {
         dev.emyth.app.data.ai.tools.local.NotificationListenerHandle.connected = false
+        dev.emyth.app.data.tea.TeaOrderMonitor.onListenerDisconnected(this)
         super.onListenerDisconnected()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
+        // The opt-in tea detector needs the original fields, including ongoing delivery notifications.
+        // Keep it ahead of the existing cache/workflow parser's filtering and truncation.
+        dev.emyth.app.data.tea.TeaOrderMonitor.onNotificationPosted(this, sbn)
         addNotification(sbn)
     }
     

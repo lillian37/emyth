@@ -173,6 +173,7 @@ class SettingsStore(
         val ALLOW_ASSISTANT_DELETE = booleanPreferencesKey("allow_assistant_delete")
         val TASK_SETTING = stringPreferencesKey("task_setting")
         val WAKES_SETTING = stringPreferencesKey("wakes_setting")
+        val TEA_ORDER_SETTING = stringPreferencesKey("tea_order_setting")
         val VOICE_CALL_SETTING = stringPreferencesKey("voice_call_setting")
 
         // 保活服务设置
@@ -315,6 +316,9 @@ class SettingsStore(
                 wakeSetting = preferences[WAKES_SETTING]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: WakeSetting(),
+                teaOrderSetting = preferences[TEA_ORDER_SETTING]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: TeaOrderSetting(),
                 builtinPromptSetting = preferences[BUILTIN_PROMPT_SETTING]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BuiltinPromptSetting(),
@@ -429,6 +433,9 @@ class SettingsStore(
                 lorebooks = settings.lorebooks.distinctBy { it.id },
                 quickMessages = settings.quickMessages.distinctBy { it.id },
                 miniApps = settings.miniApps.distinctBy { it.id },
+                teaOrderSetting = settings.teaOrderSetting.normalized(
+                    settings.assistants.map { it.id.toString() }.toSet()
+                ),
             )
         }
         .onEach { settings ->
@@ -515,6 +522,7 @@ class SettingsStore(
             preferences[ALLOW_ASSISTANT_DELETE] = settings.allowAssistantDelete
             preferences[TASK_SETTING] = JsonInstant.encodeToString(settings.taskSetting)
             preferences[WAKES_SETTING] = JsonInstant.encodeToString(settings.wakeSetting)
+            preferences[TEA_ORDER_SETTING] = JsonInstant.encodeToString(settings.teaOrderSetting.normalized())
             preferences[BUILTIN_PROMPT_SETTING] = JsonInstant.encodeToString(settings.builtinPromptSetting)
             preferences[VOICE_CALL_SETTING] = JsonInstant.encodeToString(settings.voiceCallSetting)
             preferences[WECHAT_BOT_SETTING] = JsonInstant.encodeToString(settings.wechatBotSetting)
@@ -547,6 +555,27 @@ class SettingsStore(
             settingsFlowRaw.first()
         } else {
             settingsFlow.value.copy(wakeSetting = updated)
+        }
+        return updated
+    }
+
+    suspend fun updateTeaOrderSetting(transform: (TeaOrderSetting) -> TeaOrderSetting): TeaOrderSetting {
+        var updated = TeaOrderSetting()
+        dataStore.edit { preferences ->
+            val current = preferences[TEA_ORDER_SETTING]?.let {
+                JsonInstant.decodeFromString<TeaOrderSetting>(it)
+            } ?: TeaOrderSetting()
+            val assistantIds = settingsFlow.value.assistants.map { it.id.toString() }.toSet()
+            updated = transform(current).normalized(assistantIds)
+                .withActivationTime(current, System.currentTimeMillis())
+            if (updated != current) {
+                preferences[TEA_ORDER_SETTING] = JsonInstant.encodeToString(updated)
+            }
+        }
+        settingsFlow.value = if (settingsFlow.value.init) {
+            settingsFlowRaw.first()
+        } else {
+            settingsFlow.value.copy(teaOrderSetting = updated)
         }
         return updated
     }
@@ -730,6 +759,7 @@ data class Settings(
     val allowAssistantDelete: Boolean = false,
     val taskSetting: TaskSetting = TaskSetting(),
     val wakeSetting: WakeSetting = WakeSetting(),
+    val teaOrderSetting: TeaOrderSetting = TeaOrderSetting(),
     val builtinPromptSetting: BuiltinPromptSetting = BuiltinPromptSetting(),
     val voiceCallSetting: VoiceCallSetting = VoiceCallSetting(),
     val wechatBotSetting: WechatBotSetting = WechatBotSetting(),

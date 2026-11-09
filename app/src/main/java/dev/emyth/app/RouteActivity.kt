@@ -163,6 +163,7 @@ import dev.emyth.app.ui.pages.setting.SettingSystemToolsPage
 import dev.emyth.app.ui.pages.setting.SecuritySettingPage
 import dev.emyth.app.ui.pages.setting.SettingProactiveMessagePage
 import dev.emyth.app.ui.pages.setting.SettingWakePromptsPage
+import dev.emyth.app.ui.pages.setting.SettingTeaOrdersPage
 import dev.emyth.app.ui.pages.setting.SettingBuiltinPromptsPage
 import dev.emyth.app.ui.pages.setting.SettingWeixinBotPage
 import dev.emyth.app.ui.pages.setting.SettingQqBotPage
@@ -751,6 +752,10 @@ entry<Screen.Extensions> {
                                 SettingWakePromptsPage()
                             }
 
+                            entry<Screen.SettingTeaOrders> {
+                                SettingTeaOrdersPage()
+                            }
+
                             entry<Screen.SettingBuiltinPrompts> {
                                 SettingBuiltinPromptsPage()
                             }
@@ -1160,6 +1165,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingWakePrompts : Screen
+
+    @Serializable
+    data object SettingTeaOrders : Screen
 
     @Serializable
     data object SettingBuiltinPrompts : Screen

@@ -290,6 +290,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("唤醒提示词") },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingTeaOrders) },
+                        leadingContent = { Icon(HugeIcons.Message01, null) },
+                        supportingContent = { Text("识别淘宝闪购茶饮订单通知，让指定助手主动关心") },
+                        headlineContent = { Text("淘宝闪购茶饮提醒") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingBuiltinPrompts) },
                         leadingContent = { Icon(HugeIcons.Message01, null) },
                         supportingContent = { Text("调整聊天、主动消息与插件的固定规则") },
