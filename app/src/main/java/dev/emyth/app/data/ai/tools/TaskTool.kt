@@ -16,7 +16,6 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import dev.emyth.app.data.datastore.SettingsStore
-import dev.emyth.app.data.datastore.TaskSetting
 import org.koin.java.KoinJavaComponent.getKoin
 import android.content.Context
 
@@ -69,12 +68,11 @@ fun createTaskTool(context: Context): Tool = Tool(
             val deadline = System.currentTimeMillis() + deadlineMinutes * 60_000
             val resolvedType = if (type == "photo") "photo" else "text"
             store.update {
-                it.copy(taskSetting = TaskSetting(
+                it.copy(taskSetting = it.taskSetting.withNewTask(
                     content = content,
                     type = resolvedType,
                     deadlineMillis = deadline,
                     punishment = punishment,
-                    status = "pending",
                 ))
             }
             try {
