@@ -39,6 +39,7 @@ import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
 import dev.emyth.app.ui.components.ui.RiskConfirmDialog
 import dev.emyth.app.ui.context.LocalNavController
+import dev.emyth.app.data.service.DeviceEventAiTriggerService
 import dev.emyth.app.data.service.ProactiveMessageService
 import dev.emyth.app.data.service.ProactiveMessageWorker
 import org.koin.compose.koinInject
@@ -60,9 +61,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             onConfirm = {
                 showProactiveRiskDialog = false
                 val newSetting = settings.proactiveMessageSetting.copy(enabled = true, aggressiveModeEnabled = false)
-                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                dev.emyth.app.data.service.DeviceEventAiTriggerService.stop(context)
-                ProactiveMessageService.triggerNow(context, newSetting)
+                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting)) { savedSettings ->
+                    val currentSetting = savedSettings.proactiveMessageSetting
+                    if (currentSetting.enabled && !currentSetting.aggressiveModeEnabled) {
+                        DeviceEventAiTriggerService.stop(context)
+                        ProactiveMessageService.triggerNow(context, currentSetting)
+                    }
+                }
             },
             onDismiss = { showProactiveRiskDialog = false }
         )
@@ -75,13 +80,17 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             onConfirm = {
                 showAggressiveRiskDialog = false
                 val newSetting = settings.proactiveMessageSetting.copy(aggressiveModeEnabled = true, enabled = false)
-                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                ProactiveMessageService.cancel(context)
-                try {
-                    val intent = android.content.Intent(context, dev.emyth.app.data.service.DeviceEventAiTriggerService::class.java)
-                    context.startForegroundService(intent)
-                } catch (e: Exception) {
-                    android.util.Log.e("SettingProactiveMessage", "Failed to start aggressive mode service", e)
+                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting)) { savedSettings ->
+                    val currentSetting = savedSettings.proactiveMessageSetting
+                    if (currentSetting.aggressiveModeEnabled && !currentSetting.enabled) {
+                        ProactiveMessageService.cancel(context)
+                        try {
+                            val intent = Intent(context, DeviceEventAiTriggerService::class.java)
+                            context.startForegroundService(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("SettingProactiveMessage", "Failed to start aggressive mode service", e)
+                        }
+                    }
                 }
             },
             onDismiss = { showAggressiveRiskDialog = false }
@@ -116,8 +125,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                         showProactiveRiskDialog = true
                                     } else {
                                         val newSetting = settings.proactiveMessageSetting.copy(enabled = false)
-                                        vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                                        ProactiveMessageService.cancel(context)
+                                        vm.updateSettings(
+                                            settings.copy(proactiveMessageSetting = newSetting)
+                                        ) { savedSettings ->
+                                            if (!savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.cancel(context)
+                                            }
+                                        }
                                     }
                                 }
                             )
@@ -208,14 +222,22 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 value = settings.proactiveMessageSetting.minIntervalMinutes.toString(),
                                 onValueChange = { value ->
                                     val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes > 0) {
+                                    if (minutes != null && minutes > 0 &&
+                                        minutes != settings.proactiveMessageSetting.minIntervalMinutes
+                                    ) {
                                         vm.updateSettings(
                                             settings.copy(
                                                 proactiveMessageSetting = settings.proactiveMessageSetting.copy(
                                                     minIntervalMinutes = minutes
                                                 )
                                             )
-                                        )
+                                        ) { savedSettings ->
+                                            if (savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.scheduleNext(
+                                                    context, savedSettings.proactiveMessageSetting
+                                                )
+                                            }
+                                        }
                                     }
                                 },
                                 placeholder = { Text("30") },
@@ -231,14 +253,22 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 value = settings.proactiveMessageSetting.maxIntervalMinutes.toString(),
                                 onValueChange = { value ->
                                     val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes >= settings.proactiveMessageSetting.minIntervalMinutes) {
+                                    if (minutes != null && minutes >= settings.proactiveMessageSetting.minIntervalMinutes &&
+                                        minutes != settings.proactiveMessageSetting.maxIntervalMinutes
+                                    ) {
                                         vm.updateSettings(
                                             settings.copy(
                                                 proactiveMessageSetting = settings.proactiveMessageSetting.copy(
                                                     maxIntervalMinutes = minutes
                                                 )
                                             )
-                                        )
+                                        ) { savedSettings ->
+                                            if (savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.scheduleNext(
+                                                    context, savedSettings.proactiveMessageSetting
+                                                )
+                                            }
+                                        }
                                     }
                                 },
                                 placeholder = { Text("90") },
@@ -265,8 +295,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                         showAggressiveRiskDialog = true
                                     } else {
                                         val newSetting = settings.proactiveMessageSetting.copy(aggressiveModeEnabled = false)
-                                        vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                                        dev.emyth.app.data.service.DeviceEventAiTriggerService.stop(context)
+                                        vm.updateSettings(
+                                            settings.copy(proactiveMessageSetting = newSetting)
+                                        ) { savedSettings ->
+                                            if (!savedSettings.proactiveMessageSetting.aggressiveModeEnabled) {
+                                                DeviceEventAiTriggerService.stop(context)
+                                            }
+                                        }
                                     }
                                 }
                             )
@@ -448,3 +483,4 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
         }
     }
 }
+

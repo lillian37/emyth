@@ -190,10 +190,8 @@ class EmythApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val settings = get<SettingsStore>().settingsFlowRaw.first()
-                if (settings.proactiveMessageSetting.enabled) {
-                    ProactiveMessageService.scheduleNext(this@EmythApp, settings.proactiveMessageSetting)
-                    Log.i(TAG, "Rescheduled proactive message alarm on app start")
-                }
+                ProactiveMessageService.restore(this@EmythApp, settings.proactiveMessageSetting)
+                Log.i(TAG, "Restored proactive message schedule without resetting its deadline")
             }.onFailure {
                 Log.e(TAG, "rescheduleProactiveMessageIfEnabled failed", it)
             }
@@ -374,3 +372,4 @@ class AppScope : CoroutineScope by CoroutineScope(
         Log.e(TAG, "AppScope exception", e)
     }
 )
+

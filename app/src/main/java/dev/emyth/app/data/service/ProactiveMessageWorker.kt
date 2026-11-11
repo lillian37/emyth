@@ -17,10 +17,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.ExistingWorkPolicy
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.datastore.firstLoadedSettings
 import java.util.concurrent.TimeUnit
-import kotlin.random.Random
 
 /**
  * WorkManager-based fallback for proactive message scheduling.
@@ -35,35 +35,22 @@ class ProactiveMessageWorker(
         private const val TAG = "ProactiveMessageWorker"
         private const val UNIQUE_WORK_NAME = "proactive_message_work"
 
-        fun scheduleNext(context: Context, setting: dev.emyth.app.data.datastore.ProactiveMessageSetting) {
-            if (!setting.enabled) {
-                cancel(context)
-                return
-            }
-
-            val minMinutes = setting.minIntervalMinutes.coerceAtLeast(1)
-            val maxMinutes = setting.maxIntervalMinutes.coerceAtLeast(minMinutes)
-            val delayMinutes = Random.nextInt(minMinutes, maxMinutes + 1)
+        fun scheduleAt(context: Context, triggerAt: Long, replace: Boolean) {
+            val delayMs = (triggerAt - System.currentTimeMillis()).coerceAtLeast(0L)
 
             val workRequest = OneTimeWorkRequestBuilder<ProactiveMessageWorker>()
-                .setInitialDelay(delayMinutes.toLong(), TimeUnit.MINUTES)
+                .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
+                .setInputData(Data.Builder().putLong(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, triggerAt).build())
                 .build()
 
             WorkManager.getInstance(context)
                 .enqueueUniqueWork(
                     UNIQUE_WORK_NAME,
-                    ExistingWorkPolicy.REPLACE,
+                    if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                     workRequest
                 )
 
-            // Also save trigger time to SharedPreferences for UI display
-            val triggerTime = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes.toLong())
-            context.getSharedPreferences("proactive_message_prefs", Context.MODE_PRIVATE)
-                .edit()
-                .putLong("next_trigger_time", triggerTime)
-                .apply()
-
-            Log.d(TAG, "Scheduled WorkManager proactive message in $delayMinutes minutes")
+            Log.d(TAG, "Scheduled proactive fallback for $triggerAt (replace=$replace)")
         }
 
         fun cancel(context: Context) {
@@ -94,8 +81,17 @@ class ProactiveMessageWorker(
     override suspend fun doWork(): Result {
         Log.d(TAG, "ProactiveMessageWorker triggered")
 
-        val settingsStore = org.koin.core.context.GlobalContext.get().get<SettingsStore>()
-        val settings = settingsStore.settingsFlow.first()
+        val settings = try {
+            prepareProactiveStep("读取主动消息设置") {
+                val settingsStore = org.koin.core.context.GlobalContext.get().get<SettingsStore>()
+                settingsStore.settingsFlowRaw.firstLoadedSettings()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to load proactive settings; retrying delivery", e)
+            return Result.retry()
+        }
         val proactiveSetting = settings.proactiveMessageSetting
 
         if (!proactiveSetting.enabled) {
@@ -109,12 +105,14 @@ class ProactiveMessageWorker(
             PowerManager.PARTIAL_WAKE_LOCK,
             "ProactiveMessage::WorkerWakeLock"
         )
-        wakeLock.acquire(5 * 60 * 1000L) // 5 minutes max
-
         try {
+            wakeLock.acquire(5 * 60 * 1000L) // Handoff only; the service owns its own request lock.
             // Delegate to the existing trigger service logic
             // Start the foreground service which handles the actual AI generation
             val serviceIntent = android.content.Intent(applicationContext, ProactiveMessageTriggerService::class.java)
+            inputData.getLong(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, 0L).takeIf { it > 0L }?.let {
+                serviceIntent.putExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, it)
+            }
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 applicationContext.startForegroundService(serviceIntent)
@@ -122,14 +120,13 @@ class ProactiveMessageWorker(
                 applicationContext.startService(serviceIntent)
             }
 
-            // Schedule the next trigger via WorkManager
-            scheduleNext(applicationContext, proactiveSetting)
-
+            // The service atomically claims this deadline and rearms both sources before generating.
             return Result.success()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "ProactiveMessageWorker failed", e)
-            // Schedule next even on failure
-            scheduleNext(applicationContext, proactiveSetting)
+            // Retry this delivery; replacing unique work here would cancel our own retry chain.
             return Result.retry()
         } finally {
             if (wakeLock.isHeld) {

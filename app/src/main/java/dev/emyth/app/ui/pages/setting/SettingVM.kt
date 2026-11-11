@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.datastore.firstLoadedSettings
 import dev.emyth.app.data.ai.mcp.McpManager
 
 class SettingVM(
@@ -24,9 +25,13 @@ class SettingVM(
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Lazily, Settings(init = true, providers = emptyList()))
 
-    fun updateSettings(settings: Settings) {
+    fun updateSettings(settings: Settings, onSaved: ((Settings) -> Unit)? = null) {
         viewModelScope.launch {
             settingsStore.update(settings)
+            if (onSaved != null && !settings.init) {
+                // Read the durable snapshot: optimistic StateFlow can still contain an older emission.
+                onSaved(settingsStore.settingsFlowRaw.firstLoadedSettings())
+            }
         }
     }
 
@@ -59,3 +64,4 @@ class SettingVM(
         }
     }
 }
+
