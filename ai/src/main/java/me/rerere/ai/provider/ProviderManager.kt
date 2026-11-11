@@ -10,6 +10,7 @@ import android.content.Context
 import me.rerere.ai.provider.providers.ClaudeProvider
 import me.rerere.ai.provider.providers.GoogleProvider
 import me.rerere.ai.provider.providers.OpenAIProvider
+import me.rerere.ai.util.ImageEncodeCache
 import okhttp3.OkHttpClient
 
 /**
@@ -20,6 +21,8 @@ class ProviderManager(client: OkHttpClient, context: Context) {
     private val providers = mutableMapOf<String, Provider<*>>()
 
     init {
+        ImageEncodeCache.init(context.cacheDir)
+
         // 注册默认Provider
         registerProvider("openai", OpenAIProvider(client, context))
         registerProvider("google", GoogleProvider(client, context))
