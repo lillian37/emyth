@@ -40,6 +40,8 @@ import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.ui.CLAUDE_REASONING_BLOCK_ID
+import me.rerere.ai.ui.CLAUDE_REDACTED_DATA
 import me.rerere.ai.ui.ImageGenerationResult
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
@@ -64,6 +66,7 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import kotlin.time.Clock
+import kotlin.uuid.Uuid
 
 private const val TAG = "ClaudeProvider"
 private const val ANTHROPIC_VERSION = "2023-06-01"
@@ -177,6 +180,7 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
             Log.i(TAG, "streamText: $it")
         }
 
+        val streamParser = ClaudeStreamMessageParser(::parseMessage)
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -190,16 +194,7 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                 }
 
                 val dataJson = json.parseToJsonElement(data).jsonObject
-                val deltaMessage = parseMessage(buildJsonArray {
-                    val contentBlockObj = dataJson["content_block"]?.jsonObject
-                    val deltaObj = dataJson["delta"]?.jsonObject
-                    if (contentBlockObj != null) {
-                        add(contentBlockObj)
-                    }
-                    if (deltaObj != null) {
-                        add(deltaObj)
-                    }
-                })
+                val deltaMessage = streamParser.parse(dataJson)
                 val tokenUsage = parseTokenUsage(dataJson)
                 val messageChunk = MessageChunk(
                     id = id ?: "",
@@ -490,9 +485,15 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         }
 
         is UIMessagePart.Reasoning -> buildJsonObject {
-            put("type", "thinking")
-            put("thinking", reasoning)
-            metadata?.forEach { (key, value) -> put(key, value) }
+            val redactedData = metadata?.get(CLAUDE_REDACTED_DATA)?.jsonPrimitiveOrNull?.contentOrNull
+            if (redactedData != null) {
+                put("type", "redacted_thinking")
+                put("data", redactedData)
+            } else {
+                put("type", "thinking")
+                put("thinking", reasoning)
+                metadata?.get("signature")?.let { put("signature", it) }
+            }
         }
 
         else -> null
@@ -535,20 +536,29 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                         val reasoning = UIMessagePart.Reasoning(
                             reasoning = thinking,
                             createdAt = Clock.System.now(),
-                            finishedAt = null
+                            finishedAt = null,
+                            metadata = buildJsonObject {
+                                put(CLAUDE_REASONING_BLOCK_ID, Uuid.random().toString())
+                                signature?.let { put("signature", it) }
+                            },
                         )
-                        if (signature != null) {
-                            reasoning.metadata = buildJsonObject {
-                                put("signature", signature)
-                            }
-                        }
                         parts.add(reasoning)
                     }
                 }
 
                 "redacted_thinking" -> {
                     val data = block["data"]?.jsonPrimitiveOrNull?.contentOrNull
-                    println(data)
+                    if (data != null) {
+                        parts.add(UIMessagePart.Reasoning(
+                            reasoning = "",
+                            createdAt = Clock.System.now(),
+                            finishedAt = null,
+                            metadata = buildJsonObject {
+                                put(CLAUDE_REASONING_BLOCK_ID, Uuid.random().toString())
+                                put(CLAUDE_REDACTED_DATA, data)
+                            },
+                        ))
+                    }
                 }
 
                 "tool_use" -> {

@@ -8,6 +8,7 @@ package dev.emyth.app.ui.components.message
 
 import androidx.compose.ui.util.fastForEachIndexed
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.isClaudeRedactedThinking
 
 /**
  * 思考步骤类型，用于分组 Reasoning 和 Tool
@@ -48,6 +49,7 @@ fun List<UIMessagePart>.groupMessageParts(): List<MessagePartBlock> {
     this.fastForEachIndexed { index, part ->
         when (part) {
             is UIMessagePart.Reasoning -> {
+                if (part.reasoning.isEmpty() && part.isClaudeRedactedThinking()) return@fastForEachIndexed
                 currentThinkingSteps.add(ThinkingStep.ReasoningStep(part))
             }
 

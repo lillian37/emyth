@@ -81,7 +81,7 @@ data class UIMessage(
                             acc
                         } else {
                             val lastPart = acc.lastOrNull()
-                            if (lastPart is UIMessagePart.Reasoning) {
+                            if (lastPart is UIMessagePart.Reasoning && lastPart.canAppendReasoning(deltaPart)) {
                                 // Append to the last Reasoning part
                                 acc.dropLast(1) + UIMessagePart.Reasoning(
                                     reasoning = lastPart.reasoning + deltaPart.reasoning,
@@ -178,7 +178,7 @@ data class UIMessage(
             is UIMessagePart.Video -> part.url.isNotBlank()
             is UIMessagePart.Audio -> part.url.isNotBlank()
             is UIMessagePart.Document -> part.url.isNotBlank()
-            is UIMessagePart.Reasoning -> part.reasoning.isNotBlank()
+            is UIMessagePart.Reasoning -> part.reasoning.isNotBlank() || part.hasClaudeReplayData()
             else -> true
         }
     }
