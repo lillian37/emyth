@@ -32,6 +32,132 @@ class TeaOrderDetectorTest {
     }
 
     @Test
+    fun theFirstDeliveryNoticeCanConfirmFromATeaShopNameWithoutProductDetails() {
+        val result = detect("淘宝闪购 蜜雪冰城", "您的订单开始配送")
+
+        assertEquals(TeaOrderDetectionStatus.CONFIRMED, result.status)
+        assertEquals(TeaOrderStage.DELIVERING, result.stage)
+        assertEquals(listOf("蜜雪冰城"), result.matchedTeaKeywords)
+        assertNull(result.orderId)
+    }
+
+    @Test
+    fun deliveryStartVariantsRecognizeRiderOrderFoodAndTakeawaySubjects() {
+        listOf("骑手", "订单", "餐品", "外卖").forEach { subject ->
+            listOf("开始配送", "已开始配送").forEach { progress ->
+                val body = "$subject$progress"
+                val result = detect("淘宝闪购 喜茶", body)
+
+                assertEquals(body, TeaOrderDetectionStatus.CONFIRMED, result.status)
+                assertEquals(body, TeaOrderStage.DELIVERING, result.stage)
+            }
+        }
+    }
+
+    @Test
+    fun deliverySubjectsAndProgressCanBeSeparatedByNotificationWhitespace() {
+        listOf(
+            "订单 正在配送",
+            "骑手\n已开始配送",
+            "餐品\u00a0配送中",
+            "外卖\u2003开始配送",
+            "骑手\t已取餐",
+        ).forEach { body ->
+            val result = detect("淘宝闪购 喜茶", body)
+
+            assertEquals(body, TeaOrderDetectionStatus.CONFIRMED, result.status)
+            assertEquals(body, TeaOrderStage.DELIVERING, result.stage)
+        }
+    }
+
+    @Test
+    fun oneNotificationsFieldsCanSeparateTheDeliverySubjectFromItsProgress() {
+        listOf(
+            Triple("淘宝闪购 喜茶 骑手", "开始配送", null),
+            Triple("淘宝闪购 喜茶", "订单", "已开始配送"),
+        ).forEach { (title, text, bigText) ->
+            val result = TeaOrderDetector.detect(
+                TeaOrderDetector.TAOBAO_PACKAGE, title, text, bigText, keywords,
+            )
+
+            assertEquals(TeaOrderDetectionStatus.CONFIRMED, result.status)
+            assertEquals(TeaOrderStage.DELIVERING, result.stage)
+        }
+    }
+
+    @Test
+    fun anExplicitTeaKeywordCanConfirmDeliveryWithoutAShopName() {
+        val result = detect("淘宝闪购", "您的奶茶外卖开始配送")
+
+        assertEquals(TeaOrderDetectionStatus.CONFIRMED, result.status)
+        assertEquals(TeaOrderStage.DELIVERING, result.stage)
+        assertEquals(listOf("奶茶"), result.matchedTeaKeywords)
+    }
+
+    @Test
+    fun genericDeliveryStartAndRestaurantNamesDoNotSupplyTeaEvidence() {
+        listOf("您的订单开始配送", "肯德基订单已开始配送").forEach { body ->
+            val result = detect("淘宝闪购", body)
+
+            assertEquals(body, TeaOrderDetectionStatus.UNCERTAIN, result.status)
+            assertEquals(body, TeaOrderStage.DELIVERING, result.stage)
+            assertTrue(body, result.matchedTeaKeywords.isEmpty())
+        }
+    }
+
+    @Test
+    fun deliveryStartStillRequiresFlashOrFoodDeliveryEvidence() {
+        val result = detect("淘宝", "喜茶订单开始配送")
+
+        assertEquals(TeaOrderDetectionStatus.UNCERTAIN, result.status)
+        assertEquals(TeaOrderStage.DELIVERING, result.stage)
+        assertTrue(result.matchedDeliveryKeywords.isEmpty())
+    }
+
+    @Test
+    fun deliveryStartWithoutAnExplicitSubjectDoesNotConfirmProgress() {
+        listOf("开始配送", "已开始配送", "商家开始配送").forEach { body ->
+            val result = detect("淘宝闪购 喜茶", body)
+
+            assertEquals(body, TeaOrderDetectionStatus.UNCERTAIN, result.status)
+            assertEquals(body, TeaOrderStage.UNKNOWN, result.stage)
+        }
+    }
+
+    @Test
+    fun negatedOrExpectedDeliveryStartDoesNotConfirmProgress() {
+        listOf(
+            "订单未开始配送",
+            "订单尚未开始配送",
+            "订单还没开始配送",
+            "订单即将开始配送",
+            "订单预计开始配送",
+            "骑手未开始配送",
+            "骑手即将开始配送",
+            "骑手预计开始配送",
+        ).forEach { body ->
+            val result = detect("淘宝闪购 喜茶", body)
+
+            assertEquals(body, TeaOrderDetectionStatus.UNCERTAIN, result.status)
+            assertEquals(body, TeaOrderStage.UNKNOWN, result.stage)
+        }
+    }
+
+    @Test
+    fun deliveryStartDoesNotBypassPromotionRefundOrParcelExclusions() {
+        listOf(
+            "喜茶订单开始配送，领取优惠券",
+            "喜茶订单已开始配送，订单已退款",
+            "喜茶订单开始配送，快递包裹已发货",
+        ).forEach { body ->
+            val result = detect("淘宝闪购", body)
+
+            assertEquals(body, TeaOrderDetectionStatus.IGNORED, result.status)
+            assertEquals(body, TeaOrderStage.UNKNOWN, result.stage)
+        }
+    }
+
+    @Test
     fun preparationAndDeliveryAreProgressOfTheSameOrder() {
         val preparing = detect("淘宝闪购", "喜茶商家已接单，订单号: 1234567890")
         val delivering = detect("淘宝闪购", "喜茶骑手已取餐，订单号: 1234567890")

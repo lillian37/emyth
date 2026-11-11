@@ -69,8 +69,8 @@ object TeaOrderDetector {
     private val stagePatterns = listOf(
         TeaOrderStage.DELIVERED to Regex("(?:订单|餐品|外卖|奶茶|骑手)(?:已送达|配送完成)"),
         TeaOrderStage.DELIVERING to Regex(
-            "(?:骑手(?:已接单|已取餐|正在配送|配送中|已出发|即将到达)|" +
-                "(?:订单|餐品|外卖)(?:正在配送|配送中))"
+            "(?:骑手\\s*(?:已接单|已取餐|(?:已)?开始配送|正在配送|配送中|已出发|即将到达)|" +
+                "(?:订单|餐品|外卖)\\s*(?:(?:已)?开始配送|正在配送|配送中))"
         ),
         TeaOrderStage.PREPARING to Regex(
             "(?:(?:商家|门店|店铺)(?:已接单|正在备餐|备餐中|正在制作|制作中)|" +

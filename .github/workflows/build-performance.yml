@@ -2,6 +2,11 @@ name: Build performance test APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/build-performance.yml'
+      - 'ai/**'
+      - 'app/**'
   push:
     branches: [main]
     paths:
@@ -59,7 +64,7 @@ jobs:
       - name: Test and build optimized APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assemblePerformance --no-daemon --max-workers=2
+          ./gradlew :ai:testDebugUnitTest :app:testDebugUnitTest :app:assemblePerformance --no-daemon --max-workers=2
 
       - name: Verify test package and optimization outputs
         run: |
@@ -88,6 +93,8 @@ jobs:
         with:
           name: emyth-unit-test-reports-${{ github.run_number }}
           path: |
+            ai/build/reports/tests/testDebugUnitTest/
+            ai/build/test-results/testDebugUnitTest/
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/
           if-no-files-found: ignore

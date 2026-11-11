@@ -28,4 +28,15 @@ data class TaskSetting(
     val backgroundColor: Long? = null,
     val buttonColor: Long? = null,
     val countdownColor: Long? = null,
-)
+) {
+    /** Start a new task without replacing the user's appearance settings or retaining a previous submission. */
+    fun withNewTask(content: String, type: String, deadlineMillis: Long, punishment: String): TaskSetting = copy(
+        content = content,
+        type = type,
+        deadlineMillis = deadlineMillis,
+        punishment = punishment,
+        submission = "",
+        submittedAt = 0,
+        status = "pending",
+    )
+}

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
@@ -39,10 +40,11 @@ class ChatCompletionsAPIMessageTest {
     private fun invokeBuildMessages(messages: List<UIMessage>): JsonArray {
         val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
             "buildMessages",
-            List::class.java
+            List::class.java,
+            Model::class.java,
         )
         method.isAccessible = true
-        return method.invoke(api, messages) as JsonArray
+        return method.invoke(api, messages, Model(modelId = "openai-test")) as JsonArray
     }
 
     @Test
@@ -169,8 +171,8 @@ class ChatCompletionsAPIMessageTest {
     }
 
     @Test
-    fun `reasoning should only be included for messages after last user message`() {
-        // First assistant message (before user's last message) - reasoning should NOT be included
+    fun `historical and latest assistant reasoning should be preserved verbatim`() {
+        // Historical and current assistant messages both retain their original reasoning.
         val assistant1 = UIMessage(
             role = MessageRole.ASSISTANT,
             parts = listOf(
@@ -179,7 +181,6 @@ class ChatCompletionsAPIMessageTest {
             )
         )
 
-        // Second assistant message (after user's last message) - reasoning SHOULD be included
         val assistant2 = UIMessage(
             role = MessageRole.ASSISTANT,
             parts = listOf(
@@ -197,26 +198,26 @@ class ChatCompletionsAPIMessageTest {
 
         val result = invokeBuildMessages(messages)
 
-        // Find assistant messages
+        assertEquals(4, result.size)
+        assertEquals(listOf("user", "assistant", "user", "assistant"), result.map {
+            it.jsonObject["role"]?.jsonPrimitive?.content
+        })
+        assertEquals("First question", result[0].jsonObject["content"]?.jsonPrimitive?.content)
+        assertEquals("Second question", result[2].jsonObject["content"]?.jsonPrimitive?.content)
+
         val assistantMessages = result.filter {
             it.jsonObject["role"]?.jsonPrimitive?.content == "assistant"
         }
 
         assertEquals(2, assistantMessages.size)
 
-        // First assistant should NOT have reasoning_content
         val first = assistantMessages[0].jsonObject
-        assertTrue("First assistant should not have reasoning_content",
-            !first.containsKey("reasoning_content") ||
-            first["reasoning_content"]?.jsonPrimitive?.content.isNullOrEmpty()
-        )
+        assertEquals("Initial thinking", first["reasoning_content"]?.jsonPrimitive?.content)
+        assertEquals("Initial response", first["content"]?.jsonPrimitive?.content)
 
-        // Second assistant SHOULD have reasoning_content
         val second = assistantMessages[1].jsonObject
-        assertTrue("Second assistant should have reasoning_content",
-            second.containsKey("reasoning_content") &&
-            second["reasoning_content"]?.jsonPrimitive?.content?.isNotEmpty() == true
-        )
+        assertEquals("Final thinking", second["reasoning_content"]?.jsonPrimitive?.content)
+        assertEquals("Final response", second["content"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -308,7 +309,7 @@ class ChatCompletionsAPIMessageTest {
     }
 
     @Test
-    fun `assistant with only reasoning and empty text should be filtered out`() {
+    fun `historical reasoning-only assistant messages should retain their place in history`() {
         val messages = listOf(
             UIMessage.user("Question 1"),
             UIMessage(
@@ -323,11 +324,14 @@ class ChatCompletionsAPIMessageTest {
 
         val result = invokeBuildMessages(messages)
 
-        assertEquals(2, result.size)
-        assertEquals("user", result[0].jsonObject["role"]?.jsonPrimitive?.content)
+        assertEquals(3, result.size)
+        assertEquals(listOf("user", "assistant", "user"), result.map {
+            it.jsonObject["role"]?.jsonPrimitive?.content
+        })
         assertEquals("Question 1", result[0].jsonObject["content"]?.jsonPrimitive?.content)
-        assertEquals("user", result[1].jsonObject["role"]?.jsonPrimitive?.content)
-        assertEquals("Question 2", result[1].jsonObject["content"]?.jsonPrimitive?.content)
+        assertEquals("thinking", result[1].jsonObject["reasoning_content"]?.jsonPrimitive?.content)
+        assertEquals("", result[1].jsonObject["content"]?.jsonPrimitive?.content)
+        assertEquals("Question 2", result[2].jsonObject["content"]?.jsonPrimitive?.content)
     }
 
     @Test

@@ -131,6 +131,13 @@ private fun File.compressAndEncode(
         return Pair(encodeToBase64Streaming(), mimeType)
     }
 
+    val jpegBytes = ImageEncodeCache.getOrEncode(this, maxDimension, maxPixels, quality) {
+        compressToJpeg(maxDimension, maxPixels, quality)
+    }
+    return Pair(Base64.encodeToString(jpegBytes, Base64.NO_WRAP), "image/jpeg")
+}
+
+private fun File.compressToJpeg(maxDimension: Int, maxPixels: Long, quality: Int): ByteArray {
     // 读取图片尺寸
     val options = BitmapFactory.Options().apply {
         inJustDecodeBounds = true
@@ -150,12 +157,12 @@ private fun File.compressAndEncode(
     val normalizedBitmap = normalizeByExif(bitmap)
 
     return try {
-        val byteArrayOutputStream = ByteArrayOutputStream()
+        val outputStream = ByteArrayOutputStream()
         // 强制使用 JPEG 格式，因为很多提供商不支持 webp
-        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
-            normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)
+        check(normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)) {
+            "Failed to compress image: $absolutePath"
         }
-        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
+        outputStream.toByteArray()
     } finally {
         if (normalizedBitmap !== bitmap) {
             normalizedBitmap.recycle()

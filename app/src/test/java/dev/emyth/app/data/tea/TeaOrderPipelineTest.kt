@@ -54,6 +54,61 @@ class TeaOrderPipelineTest {
     }
 
     @Test
+    fun aFirstTeaShopDeliveryNoticeCanContactOnceWithoutProductOrOrderDetails() {
+        val input = candidate("蜜雪冰城 订单开始配送")
+        assertEquals(TeaOrderDetectionStatus.CONFIRMED, input.detection.status)
+        assertNull(input.detection.orderId)
+        val recorded = TeaOrderStateReducer.record(TeaOrderState(), input, "delivery-first")
+        assertTrue(recorded.result.shouldProcess)
+        val claim = TeaOrderStateReducer.claim(recorded.state, "delivery-first", now + 1)
+        val event = requireNotNull(claim.result)
+        assertEquals(TeaOrderStage.DELIVERING, event.stage)
+        assertNull(teaOrderDeliveryFailure(event, config, setOf("assistant")))
+        val started = TeaOrderStateReducer.markGenerationStarted(claim.state, event.id, now + 2)
+        val saved = TeaOrderStateReducer.delivered(started.state, event.id, "conversation", now + 3)
+
+        val later = candidate("蜜雪冰城 订单正在配送", now + 45 * 60_000)
+        val update = TeaOrderStateReducer.record(saved.state, later, "should-not-be-new")
+        assertFalse(update.result.shouldProcess)
+        assertTrue(update.result.duplicate)
+        assertEquals("delivery-first", update.state.events.single().id)
+        assertEquals(TeaOrderStatus.DELIVERED, update.state.events.single().status)
+        assertNull(TeaOrderStateReducer.claim(update.state, event.id, later.observedAtMillis + 1).result)
+    }
+
+    @Test
+    fun aDeliveryStartWithoutTeaEvidenceCannotWakeTheAssistant() {
+        listOf("订单开始配送", "肯德基订单已开始配送").forEach { text ->
+            val input = candidate(text)
+            assertEquals(text, TeaOrderDetectionStatus.UNCERTAIN, input.detection.status)
+            assertEquals(text, TeaOrderStage.DELIVERING, input.detection.stage)
+            val recorded = TeaOrderStateReducer.record(TeaOrderState(), input, "uncertain")
+
+            assertFalse(text, recorded.result.shouldProcess)
+            assertEquals(text, TeaOrderStatus.OBSERVED, recorded.state.events.single().status)
+            assertNull(text, TeaOrderStateReducer.claim(recorded.state, "uncertain", now + 1).result)
+        }
+    }
+
+    @Test
+    fun deliveryStartCannotCombineTeaEvidenceFromAnEarlierIncompleteNotification() {
+        val first = TeaOrderStateReducer.record(
+            TeaOrderState(), candidate("蜜雪冰城 闪购消息"), "uncertain",
+        )
+        assertEquals(TeaOrderStatus.OBSERVED, first.state.events.single().status)
+
+        val update = TeaOrderStateReducer.record(
+            first.state, candidate("您的订单开始配送", now + 1), "should-not-be-new",
+        )
+
+        assertFalse(update.result.shouldProcess)
+        assertEquals("uncertain", update.state.events.single().id)
+        assertEquals(TeaOrderDetectionStatus.UNCERTAIN, update.state.events.single().detectionStatus)
+        assertEquals(TeaOrderStatus.OBSERVED, update.state.events.single().status)
+        assertNull(TeaOrderStateReducer.claim(update.state, "uncertain", now + 2).result)
+    }
+
+    @Test
     fun anInterruptedStartedRequestCannotBeReleasedForAutomaticReplay() {
         val recorded = TeaOrderStateReducer.record(
             TeaOrderState(), candidate("蜜雪冰城 下单成功 订单号:1234567890"), "event",
