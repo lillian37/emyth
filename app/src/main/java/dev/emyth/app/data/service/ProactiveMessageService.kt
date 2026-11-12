@@ -183,7 +183,11 @@ class ProactiveMessageService : KoinComponent {
             scheduler(context).restore(setting)
         }
 
-        internal fun claimScheduledTrigger(context: Context, triggerAt: Long, setting: ProactiveMessageSetting): Boolean =
+        internal fun claimScheduledTrigger(
+            context: Context,
+            triggerAt: Long,
+            setting: ProactiveMessageSetting,
+        ): Boolean =
             scheduler(context).claim(triggerAt, setting)
 
         private fun scheduleAlarm(context: Context, triggerTime: Long) {
@@ -393,10 +397,12 @@ class ProactiveMessageService : KoinComponent {
     private suspend fun getLastMessageTime(): kotlinx.datetime.Instant? {
         return try {
             val settings = settingsStore.settingsFlowRaw.firstLoadedSettings()
-            val assistantId = settings.assistantId
-            val recentConversations = conversationRepository.getRecentConversations(assistantId, limit = 1)
-            if (recentConversations.isNotEmpty()) {
-                val conv = recentConversations.first()
+            val assistantId = settings.assistants.find {
+                it.id.toString() == settings.proactiveMessageSetting.assistantId
+            }?.id ?: settings.assistantId
+            val conv = conversationRepository.getConversationsOfAssistant(assistantId).first()
+                .latestProactiveConversation(assistantId)
+            if (conv != null) {
                 val fullConv = conversationRepository.getConversationById(conv.id)
                 val localDateTime: LocalDateTime? = fullConv?.messageNodes?.lastOrNull()?.messages?.lastOrNull()?.createdAt
                 localDateTime?.toInstant(TimeZone.currentSystemDefault())
@@ -426,7 +432,16 @@ class ProactiveMessageReceiver : BroadcastReceiver() {
                     )
                 }
                 runCatching { context.startForegroundService(serviceIntent) }
-                    .onFailure { Log.e(ProactiveMessageService.TAG, "Proactive alarm handoff failed; fallback work remains", it) }
+                    .onFailure {
+                        Log.e(ProactiveMessageService.TAG, "Proactive alarm handoff failed; fallback work remains", it)
+                        ProactiveExecutionStore.begin(
+                            context,
+                            intent.getLongExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, 0L)
+                                .takeIf { time -> time > 0L },
+                            ProactiveExecutionStatus.START_FAILED,
+                            "闹钟已投递，但后台服务未能启动（${it.javaClass.simpleName}）；备用任务仍可尝试",
+                        )
+                    }
             }
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
@@ -572,6 +587,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         val randomTriggerAt = if (intent?.hasExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT) == true) {
             intent.getLongExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, 0L)
         } else null
+        val isRandomProactive = randomTriggerAt != null || timerPrepared
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
         }
@@ -596,6 +612,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             val ownedMessageIds = mutableSetOf<Uuid>()
             var interruption: String? = null
             var ownsScheduledWake = false
+            var proactiveExecutionId: String? = null
             var wakeOutcome: ScheduledWakeExecutionStatus? = null
             var wakeDetail: String? = null
             var teaStore: TeaOrderStore? = null
@@ -607,6 +624,33 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             val teaConfigurationFailure = AtomicReference<TeaOrderFailure?>(null)
 
             suspend fun recordWake(status: ScheduledWakeExecutionStatus, detail: String? = null) {
+                proactiveExecutionId?.let { executionId ->
+                    val executionStatus = when (status) {
+                        ScheduledWakeExecutionStatus.PREPARING -> ProactiveExecutionStatus.PREPARING
+                        ScheduledWakeExecutionStatus.REQUESTING -> ProactiveExecutionStatus.REQUESTING
+                        ScheduledWakeExecutionStatus.STREAMING -> ProactiveExecutionStatus.STREAMING
+                        ScheduledWakeExecutionStatus.RUNNING_TOOLS -> ProactiveExecutionStatus.RUNNING_TOOLS
+                        ScheduledWakeExecutionStatus.COMPLETED -> ProactiveExecutionStatus.COMPLETED
+                        ScheduledWakeExecutionStatus.SKIPPED -> ProactiveExecutionStatus.SKIPPED
+                        ScheduledWakeExecutionStatus.BUSY -> ProactiveExecutionStatus.BUSY
+                        ScheduledWakeExecutionStatus.FAILED -> ProactiveExecutionStatus.FAILED
+                        ScheduledWakeExecutionStatus.INTERRUPTED -> ProactiveExecutionStatus.INTERRUPTED
+                        ScheduledWakeExecutionStatus.START_FAILED -> ProactiveExecutionStatus.START_FAILED
+                        else -> null
+                    }
+                    if (executionStatus != null) {
+                        val executionDetail = detail ?: when (status) {
+                            ScheduledWakeExecutionStatus.REQUESTING -> "已开始请求模型，等待回复内容"
+                            ScheduledWakeExecutionStatus.STREAMING -> "正在接收模型内容，尚未确认保存完整回复"
+                            ScheduledWakeExecutionStatus.RUNNING_TOOLS -> "正在执行模型请求的工具"
+                            else -> null
+                        }
+                        ProactiveExecutionStore.update(
+                            this@ProactiveMessageTriggerService, executionId, executionStatus,
+                            conversationId?.toString(), executionDetail,
+                        )
+                    }
+                }
                 if (!ownsScheduledWake || scheduledWakeId == null) return
                 try {
                     withTimeout(3_000L) {
@@ -684,6 +728,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     Log.d(TAG, "Ignoring obsolete or duplicate proactive deadline $randomTriggerAt")
                     return@launch
                 }
+                if (isRandomProactive) {
+                    proactiveExecutionId = ProactiveExecutionStore.begin(
+                        this@ProactiveMessageTriggerService, randomTriggerAt,
+                        detail = "正在读取接收助手和聊天记录",
+                    )
+                }
 
                 // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发。
                 // 外部触发（网关轮询/激进模式设备事件）跳过此检查，因为这是独立信号源，不受内部闹钟链约束。
@@ -731,17 +781,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 找到最近的对话
-                val recentConversationId = if (isTeaOrder) {
-                    conversationRepository.getConversationsOfAssistant(assistantUuid).first()
-                        .maxByOrNull { it.updateAt }?.id
-                } else {
-                    conversationRepository.getRecentConversations(assistantUuid, limit = 1).firstOrNull()?.id
-                }
+                val recentConversationId = conversationRepository.getConversationsOfAssistant(assistantUuid).first()
+                    .latestProactiveConversation(assistantUuid)?.id
                 var conversation = recentConversationId?.let { conversationRepository.getConversationById(it) }
                 val selectedExistingConversation = conversation != null
 
                 conversationId = conversation?.id ?: kotlin.uuid.Uuid.random()
                 val conversationId = conversationId!!
+                recordWake(ScheduledWakeExecutionStatus.PREPARING, "已选择接收对话，正在准备生成")
 
                 // 持有会话引用，防止生成期间 session 被 idle 清除（finally 块会对应 release）。
                 // 放在 claim 之前：即使 claim 失败提前返回，引用也能在 finally 里被正确释放，保持计数平衡。
@@ -753,6 +800,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     if (lastMsgTimeMs == 0L || System.currentTimeMillis() - lastMsgTimeMs >= thresholdMs) {
                         Log.d(TAG, "主动打语音：空闲超过阈值，触发来电")
                         eventBus.emit(AppEvent.RequestVoiceCall(conversationId.toString()))
+                        proactiveExecutionId?.let { executionId ->
+                            ProactiveExecutionStore.update(
+                                this@ProactiveMessageTriggerService, executionId,
+                                ProactiveExecutionStatus.VOICE_CALL, conversationId.toString(),
+                                "已按主动打语音设置发起来电事件，本轮没有发送文字消息",
+                            )
+                        }
                         return@launch
                     }
                 }
@@ -782,7 +836,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         }
                     }
                     wakeOutcome = ScheduledWakeExecutionStatus.BUSY
-                    wakeDetail = "当前会话持续有消息在生成，等待两分钟后结束本次唤醒，未请求模型"
+                    wakeDetail = if (isScheduledWake || isTeaOrder) {
+                        "当前会话持续有消息在生成，等待两分钟后结束本次唤醒，未请求模型"
+                    } else {
+                        "当前聊天仍在生成回复，本轮主动消息跳过，未请求模型"
+                    }
                     Log.d(
                         TAG,
                         "Skip proactive trigger: session $conversationId already generating " +
@@ -1091,6 +1149,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                 }
             } catch (e: CancellationException) {
+                if (isRandomProactive && proactiveExecutionId == null) {
+                    proactiveExecutionId = ProactiveExecutionStore.begin(
+                        this@ProactiveMessageTriggerService, randomTriggerAt,
+                        ProactiveExecutionStatus.INTERRUPTED,
+                        "后台准备或生成在记录最终结果前被中断，未确认已保存回复",
+                    )
+                }
                 teaFailure = teaConfigurationFailure.get() ?: teaFailure.let {
                     if (it == TeaOrderFailure.GENERATION_FAILED) TeaOrderFailure.CANCELLED else it
                 }
@@ -1110,6 +1175,18 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
                 throw e
             } catch (e: Exception) {
+                if (isRandomProactive && proactiveExecutionId == null) {
+                    proactiveExecutionId = ProactiveExecutionStore.begin(
+                        this@ProactiveMessageTriggerService, randomTriggerAt,
+                        if (wakeLockAttempt.isFailure) ProactiveExecutionStatus.START_FAILED
+                        else ProactiveExecutionStatus.FAILED,
+                        if (wakeLockAttempt.isFailure) {
+                            "后台服务或唤醒保护未能启动（${e.javaClass.simpleName}）"
+                        } else {
+                            "后台准备未能完成（${e.javaClass.simpleName}），未确认已保存回复"
+                        },
+                    )
+                }
                 if (scheduledWakeId != null && wakeLockAttempt.isFailure) {
                     try {
                         withTimeout(3_000L) {
@@ -1162,7 +1239,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                                 Log.w(TAG, "Failed to finalize tea-order delivery", e)
                             }
                         }
-                        if (ownsScheduledWake) {
+                        if (ownsScheduledWake || proactiveExecutionId != null) {
                             recordWake(
                                 wakeOutcome ?: ScheduledWakeExecutionStatus.INTERRUPTED,
                                 wakeDetail ?: "本次唤醒未完成，未确认已保存回复",
@@ -1189,8 +1266,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to finalize proactive generation", e)
                         }
-                        if (!timerPrepared && randomTriggerAt == null && !isFromDeviceEvent && !isScheduledWake && !isTeaOrder &&
-                            wakeLockAttempt.isSuccess) {
+                        if (!timerPrepared && randomTriggerAt == null && !isFromDeviceEvent &&
+                            !isScheduledWake && !isTeaOrder && wakeLockAttempt.isSuccess
+                        ) {
                             try {
                                 withTimeout(RESCHEDULE_TIMEOUT_MS) {
                                     val currentSettings = settingsStore.settingsFlowRaw.firstLoadedSettings()

@@ -39,6 +39,7 @@ import dev.emyth.app.data.service.DailySummaryService
 import dev.emyth.app.data.service.DeviceEventAiTriggerService
 import dev.emyth.app.data.service.DeviceEventTrackingService
 import dev.emyth.app.data.service.ProactiveMessageService
+import dev.emyth.app.data.service.ProactiveExecutionStore
 import dev.emyth.app.data.service.ScheduledWakeScheduler
 import dev.emyth.app.data.service.SupabaseSyncService
 import dev.emyth.app.service.ChatService
@@ -78,6 +79,8 @@ class EmythApp : Application() {
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule, pluginModule)
         }
         this.createNotificationChannel()
+        // Application initialization finishes before this process receives service/receiver callbacks.
+        ProactiveExecutionStore.recoverAfterProcessStart(this)
 
         // 预热 ChatService 单例: 强制在主线程(Application.onCreate 由 Android 保证
         // 在主线程执行, 且先于同一进程内任何 Service/BroadcastReceiver/Activity 回调)

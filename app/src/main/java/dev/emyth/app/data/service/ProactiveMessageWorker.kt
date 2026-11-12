@@ -40,7 +40,9 @@ class ProactiveMessageWorker(
 
             val workRequest = OneTimeWorkRequestBuilder<ProactiveMessageWorker>()
                 .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
-                .setInputData(Data.Builder().putLong(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, triggerAt).build())
+                .setInputData(
+                    Data.Builder().putLong(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, triggerAt).build()
+                )
                 .build()
 
             WorkManager.getInstance(context)
@@ -126,6 +128,12 @@ class ProactiveMessageWorker(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "ProactiveMessageWorker failed", e)
+            ProactiveExecutionStore.begin(
+                applicationContext,
+                inputData.getLong(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, 0L).takeIf { it > 0L },
+                ProactiveExecutionStatus.START_FAILED,
+                "备用任务已运行，但后台服务未能启动（${e.javaClass.simpleName}）；已安排重试",
+            )
             // Retry this delivery; replacing unique work here would cancel our own retry chain.
             return Result.retry()
         } finally {
