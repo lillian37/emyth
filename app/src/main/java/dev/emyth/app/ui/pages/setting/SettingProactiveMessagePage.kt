@@ -12,8 +12,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,7 +21,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,13 +38,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import dev.emyth.app.R
-import dev.emyth.app.RouteActivity
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
 import dev.emyth.app.ui.components.ui.RiskConfirmDialog
-import dev.emyth.app.ui.context.LocalNavController
 import dev.emyth.app.data.service.DeviceEventAiTriggerService
-import dev.emyth.app.data.service.ProactiveExecutionStatus
 import dev.emyth.app.data.service.ProactiveExecutionStore
 import dev.emyth.app.data.service.ProactiveMessageService
 import dev.emyth.app.data.service.ProactiveMessageWorker
@@ -56,7 +50,6 @@ import org.koin.compose.koinInject
 @Composable
 fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val context = LocalContext.current
-    val navController = LocalNavController.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -80,6 +73,14 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
     var showAggressiveRiskDialog by remember { mutableStateOf(false) }
+    var showExecutionHistory by remember { mutableStateOf(false) }
+
+    if (showExecutionHistory) {
+        ProactiveExecutionHistorySheet(
+            executions = executionHistory,
+            onDismiss = { showExecutionHistory = false },
+        )
+    }
 
     if (showProactiveRiskDialog) {
         RiskConfirmDialog(
@@ -245,62 +246,23 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     item(
                         headlineContent = { Text("最近执行") },
                         supportingContent = {
+                            val latest = executionHistory.firstOrNull()
                             Text(
-                                if (executionHistory.isEmpty()) {
-                                    "此版本尚无执行记录；旧请求无法补查结果"
+                                if (latest == null) {
+                                    "暂无记录；新请求的执行结果会显示在这里"
                                 } else {
-                                    "最近 5 轮主动消息的执行结果，每 10 秒刷新"
+                                    "${latest.status.displayText()} · " +
+                                        timeFormat.format(java.util.Date(latest.startedAt))
                                 }
                             )
                         },
+                        trailingContent = {
+                            if (executionHistory.isNotEmpty()) Text("查看记录")
+                        },
+                        onClick = if (executionHistory.isEmpty()) null else {
+                            { showExecutionHistory = true }
+                        },
                     )
-                    executionHistory.take(5).forEach { execution ->
-                        item(
-                            headlineContent = {
-                                Text(
-                                    when (execution.status) {
-                                        ProactiveExecutionStatus.PREPARING -> "正在准备"
-                                        ProactiveExecutionStatus.REQUESTING -> "正在请求回复"
-                                        ProactiveExecutionStatus.STREAMING -> "正在接收回复"
-                                        ProactiveExecutionStatus.RUNNING_TOOLS -> "正在使用工具"
-                                        ProactiveExecutionStatus.SKIPPED -> "AI 选择跳过"
-                                        ProactiveExecutionStatus.BUSY -> "会话忙，本轮跳过"
-                                        ProactiveExecutionStatus.VOICE_CALL -> "已请求语音来电"
-                                        ProactiveExecutionStatus.COMPLETED -> "回复已保存"
-                                        ProactiveExecutionStatus.FAILED -> "执行失败"
-                                        ProactiveExecutionStatus.INTERRUPTED -> "执行已中断"
-                                        ProactiveExecutionStatus.START_FAILED -> "后台启动失败"
-                                    }
-                                )
-                            },
-                            supportingContent = {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    val plannedTime = execution.scheduledAt?.let {
-                                        timeFormat.format(java.util.Date(it))
-                                    } ?: "未记录"
-                                    Text("计划时间：$plannedTime")
-                                    Text("执行时间：${timeFormat.format(java.util.Date(execution.startedAt))}")
-                                    Text("最近更新：${timeFormat.format(java.util.Date(execution.updatedAt))}")
-                                    execution.detail?.takeIf { it.isNotBlank() }?.let { Text(it) }
-                                    execution.conversationId?.takeIf { it.isNotBlank() }?.let { conversationId ->
-                                        TextButton(
-                                            onClick = {
-                                                context.startActivity(
-                                                    Intent(context, RouteActivity::class.java).apply {
-                                                        flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                                        putExtra("conversationId", conversationId)
-                                                    }
-                                                )
-                                            }
-                                        ) {
-                                            Text("查看对应聊天")
-                                        }
-                                    }
-                                }
-                            },
-                        )
-                    }
                 }
             }
             item {
