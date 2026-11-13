@@ -90,6 +90,7 @@ test("human Markdown export omits hidden replies even when reasoning is requeste
     truncateIndex: -1,
     chatSuggestions: [],
     isPinned: false,
+    isGenerating: false,
     createAt: 0,
     updateAt: 0,
   };
