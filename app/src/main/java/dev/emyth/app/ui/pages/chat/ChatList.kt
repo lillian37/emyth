@@ -93,7 +93,6 @@ import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import dev.emyth.app.R
 import dev.emyth.app.data.datastore.Settings
@@ -104,6 +103,8 @@ import dev.emyth.app.data.model.Conversation
 import dev.emyth.app.data.model.MessageNode
 import dev.emyth.app.service.ChatError
 import dev.emyth.app.ui.components.message.ChatMessage
+import dev.emyth.app.ui.components.message.isVisibleInChat
+import dev.emyth.app.ui.components.message.visibleChatNodes
 import dev.emyth.app.ui.components.ui.ErrorCardsDisplay
 import dev.emyth.app.ui.components.ui.ListSelectableItem
 import dev.emyth.app.ui.components.ui.RabbitLoadingIndicator
@@ -288,8 +289,11 @@ private fun ChatListNormal(
                     // println("is bottom = ${visibleItemsInfo.isAtBottom()}, scroll = ${state.isScrollInProgress}, can_scroll = ${state.canScrollForward}, loading = $loading")
                     if (!state.isScrollInProgress && loadingState) {
                         if (visibleItemsInfo.isAtBottom()) {
-                            state.requestScrollToItem(conversationUpdated.messageNodes.lastIndex + 10)
-                            // Log.i(TAG, "ChatList: scroll to ${conversationUpdated.messageNodes.lastIndex}")
+                            val lastItemIndex = state.layoutInfo.totalItemsCount - 1
+                            if (lastItemIndex >= 0) {
+                                val target = conversationUpdated.messageNodes.visibleChatNodes().lastIndex + 10
+                                state.requestScrollToItem(target.coerceAtMost(lastItemIndex))
+                            }
                         }
                     }
                 }
@@ -308,14 +312,9 @@ private fun ChatListNormal(
             }
         }
 
-        // Filter out [SKIP] messages and proactive message context markers
+        // Presentation visibility is separate from retained model history.
         val displayNodes = remember(conversation.messageNodes) {
-            conversation.messageNodes.filter { node ->
-                val msg = node.currentMessage
-                val text = msg.toText().trim()
-                !(msg.role == MessageRole.ASSISTANT && text == "[SKIP]") &&
-                !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))
-            }
+            conversation.messageNodes.visibleChatNodes()
         }
 
         LazyColumn(
@@ -365,8 +364,7 @@ private fun ChatListNormal(
                             onShare = {
                                 selecting = true  // 使用 CoroutineScope 延迟状态更新
                                 selectedItems.clear()
-                                selectedItems.addAll(conversation.messageNodes.map { it.id }
-                                    .subList(0, conversation.messageNodes.indexOf(node) + 1))
+                                selectedItems.addAll(displayNodes.take(index + 1).map { it.id })
                             },
                             onUpdate = {
                                 onUpdateMessage(it)
@@ -485,7 +483,7 @@ private fun ChatListNormal(
                                 if (selectedItems.isNotEmpty()) {
                                     selectedItems.clear()
                                 } else {
-                                    selectedItems.addAll(conversation.messageNodes.map { it.id })
+                                    selectedItems.addAll(displayNodes.map { it.id })
                                 }
                             }
                         ) {
@@ -500,7 +498,7 @@ private fun ChatListNormal(
                         FilledIconButton(
                             onClick = {
                                 selecting = false
-                                val messages = conversation.messageNodes.filter { it.id in selectedItems }
+                                val messages = displayNodes.filter { it.id in selectedItems }
                                 if (messages.isNotEmpty()) {
                                     showExportSheet = true
                                 }
@@ -520,7 +518,7 @@ private fun ChatListNormal(
                     selectedItems.clear()
                 },
                 conversation = conversation,
-                selectedMessages = conversation.messageNodes.filter { it.id in selectedItems }
+                selectedMessages = displayNodes.filter { it.id in selectedItems }
                     .map { it.currentMessage }
             )
 
@@ -624,14 +622,13 @@ private fun ChatListPreview(
         LocalMaterialMode.current != DisplayMaterialMode.GLASS
     var searchQuery by remember { mutableStateOf("") }
 
-    // 过滤消息，同时保留原始 index 避免后续 O(n) indexOf 查找
+    // Keep persisted indices for callbacks, while preview/search follows the same visible projection.
     val filteredMessages = remember(conversation.messageNodes, searchQuery) {
-        if (searchQuery.isBlank()) {
-            conversation.messageNodes.mapIndexed { index, node -> index to node }
-        } else {
-            conversation.messageNodes.mapIndexed { index, node -> index to node }
-                .filter { (_, node) -> node.currentMessage.toText().contains(searchQuery, ignoreCase = true) }
-        }
+        conversation.messageNodes.mapIndexed { index, node -> index to node }
+            .filter { (_, node) -> node.isVisibleInChat() }
+            .filter { (_, node) ->
+                searchQuery.isBlank() || node.currentMessage.toText().contains(searchQuery, ignoreCase = true)
+            }
     }
 
     Column(

@@ -23,6 +23,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import dev.emyth.app.data.db.AppDatabase
 import dev.emyth.app.data.db.fts.MessageFtsManager
+import dev.emyth.app.data.db.fts.filterVisibleMessageSearchResults
 import dev.emyth.app.data.db.dao.ConversationDAO
 import dev.emyth.app.data.db.dao.FavoriteDAO
 import dev.emyth.app.data.db.dao.MessageNodeDAO
@@ -363,6 +364,19 @@ class ConversationRepository(
     }
 
     suspend fun searchMessages(keyword: String) = messageFtsManager.search(keyword)
+
+    /** Human-facing search excludes hidden messages without changing model search or stored history. */
+    suspend fun searchVisibleMessages(keyword: String) = withContext(Dispatchers.IO) {
+        val results = searchMessages(keyword)
+        if (results.isEmpty()) {
+            results
+        } else {
+            filterVisibleMessageSearchResults(
+                results,
+                messageNodeDAO.getNodesByIds(results.map { it.nodeId }.distinct()),
+            )
+        }
+    }
 
     suspend fun rebuildAllIndexes(onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }) {
         try {

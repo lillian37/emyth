@@ -88,6 +88,8 @@ import dev.emyth.app.data.model.Conversation
 import dev.emyth.app.service.ChatError
 import dev.emyth.app.service.VoiceCallService
 import dev.emyth.app.ui.components.ai.ChatInput
+import dev.emyth.app.ui.components.message.visibleChatNodeIndex
+import dev.emyth.app.ui.components.message.visibleChatNodes
 import dev.emyth.app.ui.context.LocalNavController
 import dev.emyth.app.ui.context.LocalToaster
 import dev.emyth.app.ui.context.Navigator
@@ -176,12 +178,12 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
     LaunchedEffect(nodeId, conversation.messageNodes.size) {
         if (!vm.chatListInitialized && conversation.messageNodes.isNotEmpty()) {
             if (nodeId != null) {
-                val index = conversation.messageNodes.indexOfFirst { it.id == nodeId }
+                val index = conversation.messageNodes.visibleChatNodeIndex(nodeId)
                 if (index >= 0) {
                     chatListState.scrollToItem(index)
                 }
             } else {
-                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                chatListState.requestScrollToItem(conversation.messageNodes.visibleChatNodes().size + 5)
             }
             vm.chatListInitialized = true
         }
@@ -416,7 +418,7 @@ private fun ChatPageContent(
                         } else {
                             vm.handleMessageSend(inputState.getContents())
                             scope.launch {
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                chatListState.requestScrollToItem(conversation.messageNodes.visibleChatNodes().size + 5)
                             }
                         }
                         inputState.clearInput()
@@ -436,7 +438,7 @@ private fun ChatPageContent(
                             )
                         )
                         scope.launch {
-                            chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                            chatListState.requestScrollToItem(conversation.messageNodes.visibleChatNodes().size + 5)
                         }
                     },
                     onLongSendClick = {
@@ -448,7 +450,7 @@ private fun ChatPageContent(
                         } else {
                             vm.handleMessageSend(content = inputState.getContents(), answer = false)
                             scope.launch {
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                chatListState.requestScrollToItem(conversation.messageNodes.visibleChatNodes().size + 5)
                             }
                         }
                         inputState.clearInput()
@@ -547,8 +549,12 @@ private fun ChatPageContent(
                 },
                 onJumpToMessage = { index ->
                     previewMode = false
-                    scope.launch {
-                        chatListState.animateScrollToItem(index)
+                    val targetNode = conversation.messageNodes.getOrNull(index)
+                    val visibleIndex = targetNode?.let { conversation.messageNodes.visibleChatNodeIndex(it.id) } ?: -1
+                    if (visibleIndex >= 0) {
+                        scope.launch {
+                            chatListState.animateScrollToItem(visibleIndex)
+                        }
                     }
                 },
                 onToolApproval = { toolCallId, approved, reason ->

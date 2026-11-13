@@ -113,6 +113,7 @@ import dev.emyth.app.data.datastore.findModelById
 import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.RouteActivity
 import dev.emyth.app.data.model.Conversation
+import dev.emyth.app.data.model.hideMessageFromChat
 import dev.emyth.app.data.model.toMessageNode
 import dev.emyth.app.data.repository.ConversationRepository
 import dev.emyth.app.service.ChatService
@@ -404,7 +405,7 @@ class ProactiveMessageService : KoinComponent {
                 .latestProactiveConversation(assistantId)
             if (conv != null) {
                 val fullConv = conversationRepository.getConversationById(conv.id)
-                val localDateTime: LocalDateTime? = fullConv?.messageNodes?.lastOrNull()?.messages?.lastOrNull()?.createdAt
+                val localDateTime: LocalDateTime? = fullConv?.lastVisibleMessage?.createdAt
                 localDateTime?.toInstant(TimeZone.currentSystemDefault())
             } else null
         } catch (e: Exception) {
@@ -1040,24 +1041,26 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls, shouldJump=$shouldJump")
 
                 if (rawText.trim().equals("[PASS]", ignoreCase = true)) {
-                    // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
+                    // Keep the original reply/reasoning in model history; hide only the selected UI message.
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
                     val aiId = aiMessage.id
+                    var retained = false
                     val session = chatService.getOrCreateSession(conversationId)
                     session.saveMutex.withLock {
                         val conv = chatService.getConversationFlow(conversationId).value
-                        chatService.updateConversation(
-                            conversationId,
-                            conv.copy(
-                                messageNodes = conv.messageNodes.filterNot { node ->
-                                    node.messages.any { it.id == aiId }
-                                }
-                            )
-                        )
-                        chatService.saveConversation(conversationId, chatService.getConversationFlow(conversationId).value)
+                        val hidden = conv.hideMessageFromChat(aiId)
+                        if (hidden != conv) {
+                            chatService.updateConversation(conversationId, hidden)
+                            chatService.saveConversation(conversationId, hidden)
+                        }
+                        retained = hidden.currentMessages.any { it.id == aiId && it.hideFromChat }
                     }
                     wakeOutcome = ScheduledWakeExecutionStatus.SKIPPED
-                    wakeDetail = "模型返回了完整的 [PASS]，本次未发送回复"
+                    wakeDetail = if (retained) {
+                        "本轮选择跳过，原回复与已返回的思考已保留在上下文，聊天界面隐藏"
+                    } else {
+                        "本轮选择跳过；目标消息已被移除或切换分支，未重新插入"
+                    }
                     teaFailure = TeaOrderFailure.DELIVERY_SKIPPED
                 } else {
                     // An EOF containing only reasoning/tool results is not an intentional skip.
