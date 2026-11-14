@@ -26,6 +26,7 @@ import { useCurrentAssistant } from "~/hooks/use-current-assistant";
 import { useCurrentModel } from "~/hooks/use-current-model";
 import { getAssistantDisplayName, getModelDisplayName } from "~/lib/display";
 import { convertConversationToMarkdown, downloadMarkdown } from "~/lib/export-markdown";
+import { getVisibleNodeMessages } from "~/lib/message-visibility";
 import { cn } from "~/lib/utils";
 import api, { sse } from "~/services/api";
 import { useChatInputStore, useAppStore } from "~/stores";
@@ -400,10 +401,7 @@ function useConversationDetail(activeId: string | null, updateSummary: Conversat
 
   const selectedNodeMessages = React.useMemo<SelectedNodeMessage[]>(() => {
     if (!detail) return [];
-    return detail.messages.map((node) => ({
-      node,
-      message: node.messages[node.selectIndex] ?? node.messages[0],
-    }));
+    return getVisibleNodeMessages(detail.messages);
   }, [detail]);
 
   return {

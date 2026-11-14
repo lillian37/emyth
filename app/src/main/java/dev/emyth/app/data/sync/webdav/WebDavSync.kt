@@ -18,6 +18,7 @@ import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
 import dev.emyth.app.data.datastore.WebDavConfig
 import dev.emyth.app.data.datastore.migration.SettingsJsonMigrator
+import dev.emyth.app.data.editprotection.EditProtectionStore
 import dev.emyth.app.plugin.repository.PluginRepository
 import dev.emyth.app.plugin.repository.PluginSettingsExport
 import dev.emyth.app.plugin.scanner.PluginScanner
@@ -94,6 +95,7 @@ class WebDavSync(
     }
 
     suspend fun restore(config: WebDavConfig, item: WebDavBackupItem) = withContext(Dispatchers.IO) {
+        EditProtectionStore.get(context).ensureBackupRestoreAllowed()
         val client = getClient(config)
         val backupFile = File(context.cacheDir, item.displayName)
 
@@ -247,12 +249,17 @@ class WebDavSync(
         config: WebDavConfig,
         includePlugins: Boolean = true
     ) = withContext(Dispatchers.IO) {
+        // Archive database replacement bypasses repositories, so check the separate local protection state.
+        val editProtection = EditProtectionStore.get(context)
+        editProtection.ensureBackupRestoreAllowed()
         Log.i(TAG, "restoreFromBackupFile: Starting restore from ${backupFile.absolutePath}")
 
         ZipInputStream(FileInputStream(backupFile)).use { zipIn ->
             var entry: ZipEntry?
             while (zipIn.nextEntry.also { entry = it } != null) {
                 entry?.let { zipEntry ->
+                    // Protection may have been enabled while downloading or restoring an earlier entry.
+                    editProtection.ensureBackupRestoreAllowed()
                     Log.i(TAG, "restoreFromBackupFile: Processing entry ${zipEntry.name}")
 
                     when (zipEntry.name) {

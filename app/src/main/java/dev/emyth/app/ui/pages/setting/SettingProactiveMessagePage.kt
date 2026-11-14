@@ -33,12 +33,16 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import dev.emyth.app.R
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
 import dev.emyth.app.ui.components.ui.RiskConfirmDialog
-import dev.emyth.app.ui.context.LocalNavController
+import dev.emyth.app.data.service.DeviceEventAiTriggerService
+import dev.emyth.app.data.service.ProactiveExecutionStore
 import dev.emyth.app.data.service.ProactiveMessageService
 import dev.emyth.app.data.service.ProactiveMessageWorker
 import org.koin.compose.koinInject
@@ -46,12 +50,37 @@ import org.koin.compose.koinInject
 @Composable
 fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val context = LocalContext.current
-    val navController = LocalNavController.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val timeFormat = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+    }
+    var nextTime by remember(context) { mutableStateOf(ProactiveMessageService.getNextTriggerTime(context)) }
+    var executionHistory by remember(context) { mutableStateOf(ProactiveExecutionStore.history(context)) }
+    var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
+
+    LaunchedEffect(context, lifecycleOwner, settings.proactiveMessageSetting) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                currentTime = System.currentTimeMillis()
+                nextTime = ProactiveMessageService.getNextTriggerTime(context)
+                executionHistory = ProactiveExecutionStore.history(context)
+                kotlinx.coroutines.delay(10_000L)
+            }
+        }
+    }
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
     var showAggressiveRiskDialog by remember { mutableStateOf(false) }
+    var showExecutionHistory by remember { mutableStateOf(false) }
+
+    if (showExecutionHistory) {
+        ProactiveExecutionHistorySheet(
+            executions = executionHistory,
+            onDismiss = { showExecutionHistory = false },
+        )
+    }
 
     if (showProactiveRiskDialog) {
         RiskConfirmDialog(
@@ -60,9 +89,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             onConfirm = {
                 showProactiveRiskDialog = false
                 val newSetting = settings.proactiveMessageSetting.copy(enabled = true, aggressiveModeEnabled = false)
-                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                dev.emyth.app.data.service.DeviceEventAiTriggerService.stop(context)
-                ProactiveMessageService.triggerNow(context, newSetting)
+                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting)) { savedSettings ->
+                    val currentSetting = savedSettings.proactiveMessageSetting
+                    if (currentSetting.enabled && !currentSetting.aggressiveModeEnabled) {
+                        DeviceEventAiTriggerService.stop(context)
+                        ProactiveMessageService.triggerNow(context, currentSetting)
+                    }
+                }
             },
             onDismiss = { showProactiveRiskDialog = false }
         )
@@ -75,13 +108,17 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             onConfirm = {
                 showAggressiveRiskDialog = false
                 val newSetting = settings.proactiveMessageSetting.copy(aggressiveModeEnabled = true, enabled = false)
-                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                ProactiveMessageService.cancel(context)
-                try {
-                    val intent = android.content.Intent(context, dev.emyth.app.data.service.DeviceEventAiTriggerService::class.java)
-                    context.startForegroundService(intent)
-                } catch (e: Exception) {
-                    android.util.Log.e("SettingProactiveMessage", "Failed to start aggressive mode service", e)
+                vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting)) { savedSettings ->
+                    val currentSetting = savedSettings.proactiveMessageSetting
+                    if (currentSetting.aggressiveModeEnabled && !currentSetting.enabled) {
+                        ProactiveMessageService.cancel(context)
+                        try {
+                            val intent = Intent(context, DeviceEventAiTriggerService::class.java)
+                            context.startForegroundService(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("SettingProactiveMessage", "Failed to start aggressive mode service", e)
+                        }
+                    }
                 }
             },
             onDismiss = { showAggressiveRiskDialog = false }
@@ -107,7 +144,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 CardGroup {
                     item(
                         headlineContent = { Text("启用主动消息") },
-                        supportingContent = { Text("开启后AI立即主动发一条消息，之后按设定间隔循环") },
+                        supportingContent = { Text("开启后立即请求 AI 思考，之后按设定间隔循环；AI 可以选择跳过") },
                         trailingContent = {
                             Switch(
                                 checked = settings.proactiveMessageSetting.enabled,
@@ -116,35 +153,38 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                         showProactiveRiskDialog = true
                                     } else {
                                         val newSetting = settings.proactiveMessageSetting.copy(enabled = false)
-                                        vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                                        ProactiveMessageService.cancel(context)
+                                        vm.updateSettings(
+                                            settings.copy(proactiveMessageSetting = newSetting)
+                                        ) { savedSettings ->
+                                            if (!savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.cancel(context)
+                                            }
+                                        }
                                     }
                                 }
                             )
                         }
                     )
                     if (settings.proactiveMessageSetting.enabled) {
-                        var nextTime by remember { mutableStateOf(ProactiveMessageService.getNextTriggerTime(context)) }
-                        LaunchedEffect(settings.proactiveMessageSetting) {
-                            nextTime = ProactiveMessageService.getNextTriggerTime(context)
-                            while (true) {
-                                kotlinx.coroutines.delay(10_000L)
-                                nextTime = ProactiveMessageService.getNextTriggerTime(context)
-                            }
-                        }
                         item(
                             headlineContent = { Text("下次触发时间") },
                             supportingContent = {
-                                val currentTime = System.currentTimeMillis()
                                 val triggerTime = nextTime
                                 if (triggerTime != null && triggerTime > currentTime) {
                                     val remaining = triggerTime - currentTime
                                     val remainMinutes = remaining / 60_000
                                     val remainSeconds = (remaining % 60_000) / 1000
-                                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                                    Text("🕐 ${sdf.format(java.util.Date(triggerTime))}（剩余 ${remainMinutes}分${remainSeconds}秒）")
+                                    Text(
+                                        "🕐 ${timeFormat.format(java.util.Date(triggerTime))}" +
+                                            "（剩余 ${remainMinutes}分${remainSeconds}秒）"
+                                    )
+                                } else if (triggerTime != null) {
+                                    Text(
+                                        "🕐 ${timeFormat.format(java.util.Date(triggerTime))}\n" +
+                                            "已到计划时间，等待执行结果"
+                                    )
                                 } else {
-                                    Text("等待调度中...")
+                                    Text("尚未记录下次计划时间")
                                 }
                             }
                         )
@@ -173,7 +213,9 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 Switch(
                                     checked = settings.proactiveMessageSetting.floatingBubbleEnabled,
                                     onCheckedChange = { enabled ->
-                                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                                            !Settings.canDrawOverlays(context)
+                                        ) {
                                             // 无 overlay 权限，引导用户去系统设置授权
                                             val intent = Intent(
                                                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -202,20 +244,52 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             item {
                 CardGroup {
                     item(
+                        headlineContent = { Text("最近执行") },
+                        supportingContent = {
+                            val latest = executionHistory.firstOrNull()
+                            Text(
+                                if (latest == null) {
+                                    "暂无记录；新请求的执行结果会显示在这里"
+                                } else {
+                                    "${latest.status.displayText()} · " +
+                                        timeFormat.format(java.util.Date(latest.startedAt))
+                                }
+                            )
+                        },
+                        trailingContent = {
+                            if (executionHistory.isNotEmpty()) Text("查看记录")
+                        },
+                        onClick = if (executionHistory.isEmpty()) null else {
+                            { showExecutionHistory = true }
+                        },
+                    )
+                }
+            }
+            item {
+                CardGroup {
+                    item(
                         headlineContent = { Text("最小间隔 (分钟)") },
                         supportingContent = {
                             OutlinedTextField(
                                 value = settings.proactiveMessageSetting.minIntervalMinutes.toString(),
                                 onValueChange = { value ->
                                     val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes > 0) {
+                                    if (minutes != null && minutes > 0 &&
+                                        minutes != settings.proactiveMessageSetting.minIntervalMinutes
+                                    ) {
                                         vm.updateSettings(
                                             settings.copy(
                                                 proactiveMessageSetting = settings.proactiveMessageSetting.copy(
                                                     minIntervalMinutes = minutes
                                                 )
                                             )
-                                        )
+                                        ) { savedSettings ->
+                                            if (savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.scheduleNext(
+                                                    context, savedSettings.proactiveMessageSetting
+                                                )
+                                            }
+                                        }
                                     }
                                 },
                                 placeholder = { Text("30") },
@@ -231,14 +305,23 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 value = settings.proactiveMessageSetting.maxIntervalMinutes.toString(),
                                 onValueChange = { value ->
                                     val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes >= settings.proactiveMessageSetting.minIntervalMinutes) {
+                                    if (minutes != null &&
+                                        minutes >= settings.proactiveMessageSetting.minIntervalMinutes &&
+                                        minutes != settings.proactiveMessageSetting.maxIntervalMinutes
+                                    ) {
                                         vm.updateSettings(
                                             settings.copy(
                                                 proactiveMessageSetting = settings.proactiveMessageSetting.copy(
                                                     maxIntervalMinutes = minutes
                                                 )
                                             )
-                                        )
+                                        ) { savedSettings ->
+                                            if (savedSettings.proactiveMessageSetting.enabled) {
+                                                ProactiveMessageService.scheduleNext(
+                                                    context, savedSettings.proactiveMessageSetting
+                                                )
+                                            }
+                                        }
                                     }
                                 },
                                 placeholder = { Text("90") },
@@ -255,7 +338,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     item(
                         headlineContent = { Text("激进模式") },
                         supportingContent = {
-                            Text("开启后，每次手机切换应用、开屏锁屏、回到桌面都会触发 AI 思考。AI 会根据用户的手机动向自主决定是否主动发消息或切屏。\n\n可以独立开启，不需要同时开启主动消息。\n\n这是一个常驻前台服务，会持续小幅耗电。需要开启使用情况访问权限。\n\nAI 大多数时候会选择 [PASS] 跳过，只在觉得有话要说时才会发消息。")
+                            Text(
+                                "开启后，每次手机切换应用、开屏锁屏、回到桌面都会触发 AI 思考。" +
+                                    "AI 会根据用户的手机动向自主决定是否主动发消息或切屏。\n\n" +
+                                    "可以独立开启，不需要同时开启主动消息。\n\n" +
+                                    "这是一个常驻前台服务，会持续小幅耗电。需要开启使用情况访问权限。\n\n" +
+                                    "AI 大多数时候会选择 [PASS] 跳过，只在觉得有话要说时才会发消息。"
+                            )
                         },
                         trailingContent = {
                             Switch(
@@ -264,9 +353,16 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                     if (enabled) {
                                         showAggressiveRiskDialog = true
                                     } else {
-                                        val newSetting = settings.proactiveMessageSetting.copy(aggressiveModeEnabled = false)
-                                        vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
-                                        dev.emyth.app.data.service.DeviceEventAiTriggerService.stop(context)
+                                        val newSetting = settings.proactiveMessageSetting.copy(
+                                            aggressiveModeEnabled = false
+                                        )
+                                        vm.updateSettings(
+                                            settings.copy(proactiveMessageSetting = newSetting)
+                                        ) { savedSettings ->
+                                            if (!savedSettings.proactiveMessageSetting.aggressiveModeEnabled) {
+                                                DeviceEventAiTriggerService.stop(context)
+                                            }
+                                        }
                                     }
                                 }
                             )
@@ -440,7 +536,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     item(
                         headlineContent = { Text("说明") },
                         supportingContent = {
-                            Text("启用后，AI 会在设定的最小和最大间隔之间随机一个时间点主动给你发消息。你回复后计时器重置，重新开始随机计时；不回复则继续循环发消息。AI 可以自己思考选择要不要回复，如果觉得没什么好说的可以跳过。\n\n提示：同时使用 AlarmManager + WorkManager 双重调度，确保消息能准时触发。\n\n强制跳转：开启后 AI 会自行判断是否需要拉起屏幕。")
+                            Text(
+                                "启用后，AI 会在设定的最小和最大间隔之间随机一个时间点尝试联系你。" +
+                                    "你回复后计时器重置，重新开始随机计时；不回复则继续循环发消息。" +
+                                    "AI 可以自己思考选择要不要回复，如果觉得没什么好说的可以跳过。\n\n" +
+                                    "每轮是否发送回复，请查看上方的最近执行结果。\n\n" +
+                                    "强制跳转：开启后 AI 会自行判断是否需要拉起屏幕。"
+                            )
                         },
                     )
                 }
@@ -448,3 +550,4 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
         }
     }
 }
+

@@ -52,6 +52,9 @@ data class Conversation(
             return messageNodes.map { node -> node.messages[node.selectIndex] }
         }
 
+    /** UI/contact timing excludes hidden background replies without changing model history. */
+    val lastVisibleMessage get() = currentMessages.lastOrNull { !it.hideFromChat }
+
     fun getMessageNodeByMessage(message: UIMessage): MessageNode? {
         return messageNodes.firstOrNull { node -> node.messages.contains(message) }
     }
@@ -123,6 +126,9 @@ data class MessageNode(
         messages[selectIndex]
     }
 
+    /** The selected branch decides presentation; model history still uses currentMessages. */
+    val hideFromChat get() = messages.getOrNull(selectIndex)?.hideFromChat == true
+
     val role get() = messages.firstOrNull()?.role ?: MessageRole.USER
 
     companion object {
@@ -138,6 +144,21 @@ fun UIMessage.toMessageNode(): MessageNode {
         messages = listOf(this),
         selectIndex = 0
     )
+}
+
+/** Hide only an existing response, preserving content and all branch/message identities. */
+fun Conversation.hideMessageFromChat(messageId: Uuid): Conversation {
+    var changed = false
+    val nodes = messageNodes.map { node ->
+        val messages = node.messages.map { message ->
+            if (message.id == messageId && !message.hideFromChat) {
+                changed = true
+                message.copy(hideFromChat = true)
+            } else message
+        }
+        if (messages == node.messages) node else node.copy(messages = messages)
+    }
+    return if (changed) copy(messageNodes = nodes) else this
 }
 
 /**

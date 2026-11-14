@@ -23,6 +23,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProactiveRequestBuilderTest {
+    @Test
+    fun `hidden skipped reply and its thinking remain in the next proactive request`() = runBlocking {
+        val visible = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(UIMessagePart.Reasoning("Earlier thought"), UIMessagePart.Text("Earlier reply")),
+        )
+        val skipped = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(UIMessagePart.Reasoning("Wait before contacting again"), UIMessagePart.Text("[PASS]")),
+            hideFromChat = true,
+        )
+        val request = prepareProactiveMessages(
+            "Assistant settings",
+            listOf(UIMessage.user("Earlier user message"), visible, skipped),
+            UIMessage.user("A new proactive wake"),
+        ) { input ->
+            assertTrue(input.any { it.id == skipped.id && it.hideFromChat })
+            input
+        }
+
+        val assistantParts = request.filter { it.role == MessageRole.ASSISTANT }.flatMap { it.parts }
+        assertEquals(
+            listOf("Earlier thought", "Wait before contacting again"),
+            assistantParts.filterIsInstance<UIMessagePart.Reasoning>().map { it.reasoning },
+        )
+        assertTrue(assistantParts.filterIsInstance<UIMessagePart.Text>().any { it.text == "[PASS]" })
+        assertTrue(skipped.hideFromChat)
+        assertEquals(MessageRole.USER, request.last().role)
+    }
+
     private val updatedPrompt = "新唤醒提示：只整理今天的读书笔记。"
     private val updatedSystem = "当前计划的新备注：整理读书笔记，不执行旧任务。"
 
@@ -155,3 +185,4 @@ class ProactiveRequestBuilderTest {
         assertTrue(text(request.last()).endsWith(updatedPrompt))
     }
 }
+

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -52,6 +53,9 @@ import dev.emyth.app.data.ai.transformers.transforms
 import dev.emyth.app.data.ai.transformers.visualTransforms
 import dev.emyth.app.data.ai.prompts.ChatBuiltinPrompts
 import dev.emyth.app.data.ai.tools.buildMemoryTools
+import dev.emyth.app.data.ai.tools.createAssistantEditPermissionTool
+import dev.emyth.app.data.editprotection.EditAssistantActor
+import dev.emyth.app.data.editprotection.editProtectionRequestMessages
 import dev.emyth.app.data.ai.tools.buildWriteFilesTool
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.service.MemoryBankService
@@ -125,18 +129,21 @@ class GenerationHandler(
                     buildMemoryTools(
                         json = json,
                         onCreation = { content ->
-                            memoryRepo.addMemory(memoryAssistantId, content)
+                            memoryRepo.addMemoryFromAssistant(assistant.id.toString(), memoryAssistantId, content)
                         },
                         onUpdate = { id, content ->
-                            memoryRepo.updateContent(id, content)
+                            memoryRepo.updateContentFromAssistant(
+                                assistant.id.toString(), memoryAssistantId, id, content,
+                            )
                         },
                         onDelete = { id ->
-                            memoryRepo.deleteMemory(id)
+                            memoryRepo.deleteMemoryFromAssistant(assistant.id.toString(), memoryAssistantId, id)
                         }
                     ).let(this::addAll)
                 }
                 // 文件写入工具 - AI可直接将文件内容写入设备或打包ZIP
                 add(buildWriteFilesTool(conversationId))
+                createAssistantEditPermissionTool(context, assistant.id.toString(), conversationId)?.let(this::add)
                 addAll(tools)
             }
  
@@ -184,6 +191,7 @@ class GenerationHandler(
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
                     workspaceCwd = workspaceCwd,
+                    conversationId = conversationId,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -309,7 +317,9 @@ class GenerationHandler(
                                 error("Invalid tool arguments JSON for ${tool.toolName}: ${it.message}")
                             }
                             Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: $args")
-                            val result = toolDef.execute(args)
+                            val result = withContext(EditAssistantActor(assistant.id.toString())) {
+                                toolDef.execute(args)
+                            }
                             executedTools += tool.copy(output = result)
                         }.onFailure {
                             it.printStackTrace()
@@ -380,6 +390,7 @@ class GenerationHandler(
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         conversationSystemPrompt: String? = null,
         workspaceCwd: String? = null,
+        conversationId: String? = null,
     ) {
         val internalMessages = buildList {
             val system = buildString {
@@ -563,6 +574,9 @@ class GenerationHandler(
             workspaceCwd = workspaceCwd,
         )
  
+        val requestMessages = editProtectionRequestMessages(
+            context, assistant.id.toString(), conversationId, internalMessages,
+        )
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
             model = model,
@@ -591,7 +605,7 @@ class GenerationHandler(
             )
             providerImpl.streamText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = requestMessages,
                 params = params
             ).collect {
                 messages = messages.handleMessageChunk(chunk = it, model = model)
@@ -617,7 +631,7 @@ class GenerationHandler(
             )
             val chunk = providerImpl.generateText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = requestMessages,
                 params = params,
             )
             messages = messages.handleMessageChunk(chunk = chunk, model = model)
@@ -731,3 +745,4 @@ private fun <T> Flow<T>.throttleLatest(periodMillis: Long): Flow<T> {
     }
 }
  
+

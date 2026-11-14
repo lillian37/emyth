@@ -27,6 +27,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.editprotection.ProtectedEditDeniedException
 import dev.emyth.app.data.files.FilesManager
 import dev.emyth.app.data.repository.ConversationRepository
 import dev.emyth.app.service.ChatService
@@ -80,6 +81,12 @@ fun Application.configureWebApi(
         }
         exception<ApiException> { call, cause ->
             call.respond(cause.status, ErrorResponse(cause.message, cause.status.value))
+        }
+        exception<ProtectedEditDeniedException> { call, cause ->
+            call.respond(
+                HttpStatusCode.Forbidden,
+                ErrorResponse(cause.message ?: "编辑已锁定，请先申请编辑权限", HttpStatusCode.Forbidden.value),
+            )
         }
         exception<Throwable> { call, cause ->
             call.respond(
@@ -222,3 +229,4 @@ private fun extractAccessToken(authorizationHeader: String?, queryToken: String?
 private fun secureEquals(left: String, right: String): Boolean {
     return MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))
 }
+

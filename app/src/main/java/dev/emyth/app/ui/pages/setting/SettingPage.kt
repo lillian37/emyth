@@ -47,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiMagic
+import me.rerere.hugeicons.stroke.AlarmClock
+import me.rerere.hugeicons.stroke.Edit03
+import me.rerere.hugeicons.stroke.Notification02
 import me.rerere.hugeicons.stroke.Mic01
 import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.CloudServer
@@ -285,19 +288,19 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingWakePrompts) },
-                        leadingContent = { Icon(HugeIcons.Message01, null) },
+                        leadingContent = { Icon(HugeIcons.AlarmClock, null) },
                         supportingContent = { Text("查看 AI 设定的计划，编辑唤醒时的提示词") },
                         headlineContent = { Text("唤醒提示词") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingTeaOrders) },
-                        leadingContent = { Icon(HugeIcons.Message01, null) },
+                        leadingContent = { Icon(HugeIcons.Notification02, null) },
                         supportingContent = { Text("识别淘宝闪购茶饮订单通知，让指定助手主动关心") },
                         headlineContent = { Text("淘宝闪购茶饮提醒") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingBuiltinPrompts) },
-                        leadingContent = { Icon(HugeIcons.Message01, null) },
+                        leadingContent = { Icon(HugeIcons.Edit03, null) },
                         supportingContent = { Text("调整聊天、主动消息与插件的固定规则") },
                         headlineContent = { Text("内置提示词") },
                     )

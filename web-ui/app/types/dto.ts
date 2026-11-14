@@ -50,6 +50,7 @@ export interface MessageDto {
   modelId?: string | null;
   usage?: TokenUsage | null;
   translation?: string | null;
+  hideFromChat?: boolean;
 }
 
 export interface MessageNodeDto {
