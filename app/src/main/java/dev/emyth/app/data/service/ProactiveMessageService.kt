@@ -80,6 +80,12 @@ import dev.emyth.app.data.ai.transformers.transforms
 import dev.emyth.app.data.ai.transformers.visualTransforms
 import dev.emyth.app.data.ai.transformers.onGenerationFinish
 import dev.emyth.app.data.ai.tools.LocalTools
+import dev.emyth.app.data.ai.tools.createAssistantEditPermissionTool
+import dev.emyth.app.data.editprotection.EditAssistantActor
+import dev.emyth.app.data.editprotection.EditProtectionStore
+import dev.emyth.app.data.editprotection.EditProtectionWake
+import dev.emyth.app.data.editprotection.EXTRA_EDIT_PROTECTION_ASSISTANT_ID
+import dev.emyth.app.data.editprotection.editProtectionRequestMessages
 import dev.emyth.app.data.ai.tools.SystemTools
 import dev.emyth.app.data.ai.tools.createSearchTools
 import dev.emyth.app.data.ai.tools.createSkillTools
@@ -584,11 +590,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         val isScheduledWake = scheduledWakeId != null || legacyWakeNote != null
         val teaOrderEventId = intent?.getStringExtra(EXTRA_TEA_ORDER_EVENT_ID)
         val isTeaOrder = teaOrderEventId != null
+        val editAssistantId = intent?.getStringExtra(EXTRA_EDIT_PROTECTION_ASSISTANT_ID)
+        val isEditProtectionWake = editAssistantId != null
         val timerPrepared = intent?.getBooleanExtra(ProactiveMessageService.EXTRA_TIMER_PREPARED, false) == true
         val randomTriggerAt = if (intent?.hasExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT) == true) {
             intent.getLongExtra(ProactiveMessageService.EXTRA_RANDOM_TRIGGER_AT, 0L)
         } else null
-        val isRandomProactive = randomTriggerAt != null || timerPrepared
+        val isRandomProactive = randomTriggerAt != null || timerPrepared || isEditProtectionWake
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
         }
@@ -622,6 +630,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             var teaReplySaved = false
             var teaRetryQueued = false
             var teaConfigurationWatcher: Job? = null
+            var editWake: EditProtectionWake? = null
+            var retryEditWake = false
             val teaConfigurationFailure = AtomicReference<TeaOrderFailure?>(null)
 
             suspend fun recordWake(status: ScheduledWakeExecutionStatus, detail: String? = null) {
@@ -671,6 +681,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             try {
                 wakeLockAttempt.getOrThrow()
+                if (editAssistantId != null) {
+                    editWake = EditProtectionStore.get(this@ProactiveMessageTriggerService)
+                        .claimWake(editAssistantId) ?: return@launch
+                    retryEditWake = true
+                }
                 if (teaOrderEventId != null) {
                     val store = TeaOrderStore.get(this@ProactiveMessageTriggerService)
                     teaStore = store
@@ -715,7 +730,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 激进模式设备事件触发时，不检查主动消息开关（可独立工作）
-                if (!proactiveSetting.enabled && !isFromDeviceEvent && !isScheduledWake && !isTeaOrder) {
+                if (!proactiveSetting.enabled && !isFromDeviceEvent && !isScheduledWake && !isTeaOrder &&
+                    !isEditProtectionWake
+                ) {
                     return@launch
                 }
 
@@ -740,7 +757,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 外部触发（网关轮询/激进模式设备事件）跳过此检查，因为这是独立信号源，不受内部闹钟链约束。
                 // 注意：isForceTrigger 跳过的是"时间间隔节流"（两回事），不跳过后面 tryClaimGeneration 的并发安全检查。
                 // 把"读取 last_triggered_time -> 判断 -> 写入"整段放在同步块里，修复 check-then-act 竞态。
-                if (randomTriggerAt == null && !isForceTrigger && !isScheduledWake && !isTeaOrder) {
+                if (randomTriggerAt == null && !isForceTrigger && !isScheduledWake && !isTeaOrder &&
+                    !isEditProtectionWake
+                ) {
                     val skipDueToInterval = synchronized(prefsLock) {
                         val lastTriggeredTime = prefs.getLong("last_triggered_time", 0L)
                         val minIntervalMs = proactiveSetting.minIntervalMinutes.coerceAtLeast(1).toLong() * 60_000L
@@ -756,7 +775,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         Log.d(TAG, "Duplicate trigger within min interval, skipping")
                         return@launch
                     }
-                } else if (!isTeaOrder) {
+                } else if (!isTeaOrder && !isEditProtectionWake) {
                     // 强制触发也写入时间戳，保持与常规触发一致的状态记录
                     synchronized(prefsLock) {
                         prefs.edit().putLong("last_triggered_time", System.currentTimeMillis()).apply()
@@ -764,7 +783,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 获取助手
-                val assistant = if (teaEvent != null) {
+                val assistant = if (editAssistantId != null) {
+                    settings.assistants.find { it.id.toString() == editAssistantId }
+                        ?: run {
+                            retryEditWake = false
+                            throw IllegalStateException("编辑保护对应的助手已不存在")
+                        }
+                } else if (teaEvent != null) {
                     settings.assistants.find { it.id.toString() == teaEvent.targetAssistantId }
                         ?: run {
                             teaFailure = TeaOrderFailure.ASSISTANT_UNAVAILABLE
@@ -782,8 +807,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 找到最近的对话
-                val recentConversationId = conversationRepository.getConversationsOfAssistant(assistantUuid).first()
-                    .latestProactiveConversation(assistantUuid)?.id
+                val requestedEditConversation = editWake?.conversationId?.let { id ->
+                    runCatching { Uuid.parse(id) }.getOrNull()?.let { conversationRepository.getConversationById(it) }
+                        ?.takeIf { it.assistantId == assistantUuid }
+                }
+                val recentConversationId = requestedEditConversation?.id
+                    ?: conversationRepository.getConversationsOfAssistant(assistantUuid).first()
+                        .latestProactiveConversation(assistantUuid)?.id
                 var conversation = recentConversationId?.let { conversationRepository.getConversationById(it) }
                 val selectedExistingConversation = conversation != null
 
@@ -795,7 +825,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 放在 claim 之前：即使 claim 失败提前返回，引用也能在 finally 里被正确释放，保持计数平衡。
                 // 同时把数据库里的完整对话同步到 session，防止流式更新时 conv 是空状态导致覆盖历史。
                 // 主动打语音：开启时，若用户超过阈值没来找我，触发来电（不发消息）
-                if (proactiveSetting.voiceCallEnabled && !isFromDeviceEvent && !isScheduledWake && !isTeaOrder) {
+                if (proactiveSetting.voiceCallEnabled && !isFromDeviceEvent && !isScheduledWake && !isTeaOrder &&
+                    !isEditProtectionWake
+                ) {
                     val lastMsgTimeMs = proactiveMessageService.getLastMessageTimeMs()
                     val thresholdMs = proactiveSetting.voiceCallIdleThresholdMinutes.coerceAtLeast(1) * 60_000L
                     if (lastMsgTimeMs == 0L || System.currentTimeMillis() - lastMsgTimeMs >= thresholdMs) {
@@ -822,13 +854,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val myJob = coroutineContext[Job]
                     ?: throw IllegalStateException("后台生成任务不存在")
                 val session = chatService.getOrCreateSession(conversationId)
-                val claimed = if (isScheduledWake || isTeaOrder) {
+                val claimed = if (isScheduledWake || isTeaOrder || isEditProtectionWake) {
                     recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在等待当前会话的回复结束（最多两分钟）")
                     session.claimGenerationWhenAvailable(myJob)
                 } else {
                     session.tryClaimGeneration(myJob)
                 }
                 if (!claimed) {
+                    if (editWake != null) retryEditWake = true
                     if (teaEvent != null) {
                         teaFailure = TeaOrderFailure.SESSION_BUSY
                         if (teaStore?.releaseBeforeStart(teaEvent.id) == true) {
@@ -837,7 +870,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         }
                     }
                     wakeOutcome = ScheduledWakeExecutionStatus.BUSY
-                    wakeDetail = if (isScheduledWake || isTeaOrder) {
+                    wakeDetail = if (isScheduledWake || isTeaOrder || isEditProtectionWake) {
                         "当前会话持续有消息在生成，等待两分钟后结束本次唤醒，未请求模型"
                     } else {
                         "当前聊天仍在生成回复，本轮主动消息跳过，未请求模型"
@@ -877,7 +910,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 如果有设备事件上下文（激进模式），使用它替代常规上下文；否则使用常规上下文
                 recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在获取唤醒上下文")
                 val contextStr = prepareProactiveStep("获取唤醒上下文") {
-                    if (teaEvent != null) {
+                    if (isEditProtectionWake) {
+                        """
+                            [应用编辑保护事件唤醒]
+                            受保护的人设、会话提示词或内置记忆出现了编辑尝试、权限变动或已授权修改。
+                            具体事实在本轮末尾的应用记录中；被拦截的修改未生效，待保存不能当作已改。
+                            请根据记录与用户沟通，你可以自行决定是否开放十五分钟编辑权限。
+                            授权必须实际调用 assistant_edit_permission 工具。无需查询设备状态。
+                            若暂不回复，可按原规则完整返回 [PASS]，记录仍保留供后续读取。
+                        """.trimIndent()
+                    } else if (teaEvent != null) {
                         teaOrderContext(teaEvent)
                     } else if (isFromDeviceEvent && deviceEventContext != null) {
                         settings.builtinPromptSetting.proactiveDeviceContext(deviceEventContext)
@@ -910,7 +952,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     jumpThreshold = proactiveSetting.jumpIdleThresholdMinutes,
                     isFromDeviceEvent = isFromDeviceEvent,
                     deviceEventContext = contextStr,
-                    isScheduledWake = isScheduledWake,
+                    isScheduledWake = isScheduledWake || isEditProtectionWake,
                     isTeaOrder = isTeaOrder,
                 )
 
@@ -919,6 +961,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     role = MessageRole.USER,
                     parts = listOf(UIMessagePart.Text(
                         when {
+                            isEditProtectionWake -> "请查看应用编辑保护记录，决定如何回应或处理编辑授权。"
                             teaEvent != null -> settings.teaOrderSetting.effectivePrompt
                             isFromDeviceEvent -> settings.builtinPromptSetting.proactiveUserText(true)
                             isScheduledWake -> scheduledWakePrompt(wakePrompt)
@@ -955,7 +998,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 构建工具列表（与 ChatService 保持一致）
                 recordWake(ScheduledWakeExecutionStatus.PREPARING, "正在准备可用工具")
-                val tools = prepareProactiveStep("准备可用工具") { buildTools(settings, assistant, model) }
+                val tools = prepareProactiveStep("准备可用工具") {
+                    buildTools(settings, assistant, model, conversationId.toString())
+                }
 
                 // 主动消息场景：支持工具调用，但限制最大步数
                 // temperature 不强制默认 0.8f，保持与 GenerationHandler 一致（assistant.temperature 为 null 时不传），
@@ -998,11 +1043,20 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         throw CancellationException("茶饮提醒记录已移除")
                     }
                 }
+                val requestMessages = editProtectionRequestMessages(
+                    this@ProactiveMessageTriggerService, assistantUuid.toString(), conversationId.toString(),
+                    messages, eventsOverride = editWake?.events,
+                )
+                editWake?.let { receipt ->
+                    if (!EditProtectionStore.get(this@ProactiveMessageTriggerService)
+                            .markWakeRequestStarted(receipt.assistantId, receipt.id)
+                    ) throw CancellationException("编辑保护唤醒已结束，未重新请求模型")
+                }
                 val (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
                     conversationId = conversationId,
                     providerImpl = providerImpl,
                     providerSetting = providerSetting,
-                    initialMessages = messages,
+                    initialMessages = requestMessages,
                     params = params,
                     tools = tools,
                     model = model,
@@ -1234,6 +1288,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 定时链断裂。NonCancellable 保证这段收尾逻辑跑完。
                 withContext(NonCancellable) {
                     try {
+                        editWake?.let { receipt ->
+                            try {
+                                withTimeout(CLEANUP_TIMEOUT_MS) {
+                                    EditProtectionStore.get(this@ProactiveMessageTriggerService)
+                                        .finishWake(receipt.assistantId, receipt.id, retryEditWake)
+                                }
+                            } catch (failure: Exception) {
+                                Log.w(TAG, "Failed to finish edit-protection wake", failure)
+                            }
+                        }
                         claimedTeaEvent?.let { event ->
                             try {
                                 if (teaReplySaved) teaStore?.markDelivered(event.id, conversationId?.toString())
@@ -1270,7 +1334,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                             Log.e(TAG, "Failed to finalize proactive generation", e)
                         }
                         if (!timerPrepared && randomTriggerAt == null && !isFromDeviceEvent &&
-                            !isScheduledWake && !isTeaOrder && wakeLockAttempt.isSuccess
+                            !isScheduledWake && !isTeaOrder && !isEditProtectionWake && wakeLockAttempt.isSuccess
                         ) {
                             try {
                                 withTimeout(RESCHEDULE_TIMEOUT_MS) {
@@ -1480,8 +1544,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
      * 只加载系统工具 + 本地工具 + MCP 工具 + 插件工具，不加载搜索/Skill 工具，
      * 避免工具过多导致请求体过大触发 API 400。
      */
-    private suspend fun buildTools(settings: Settings, assistant: Assistant, model: Model): List<Tool> {
+    private suspend fun buildTools(
+        settings: Settings,
+        assistant: Assistant,
+        model: Model,
+        conversationId: String,
+    ): List<Tool> {
         return buildList {
+            createAssistantEditPermissionTool(
+                this@ProactiveMessageTriggerService, assistant.id.toString(), conversationId,
+            )?.let(this::add)
             // 本地工具（助手已启用的）
             addAll(localTools.getTools(assistant.localTools))
 
@@ -1740,7 +1812,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                             JsonObject(emptyMap())
                         }
                         Log.d(TAG, "Executing tool ${toolDef.name} with args: $args")
-                        val result = toolDef.execute(args)
+                        val result = withContext(EditAssistantActor(assistant.id.toString())) {
+                            toolDef.execute(args)
+                        }
                         executedTools.add(toolCall.copy(output = result))
                     } catch (e: CancellationException) {
                         throw e

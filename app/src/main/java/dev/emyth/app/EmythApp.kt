@@ -40,6 +40,7 @@ import dev.emyth.app.data.service.DeviceEventAiTriggerService
 import dev.emyth.app.data.service.DeviceEventTrackingService
 import dev.emyth.app.data.service.ProactiveMessageService
 import dev.emyth.app.data.service.ProactiveExecutionStore
+import dev.emyth.app.data.editprotection.startEditProtectionDispatch
 import dev.emyth.app.data.service.ScheduledWakeScheduler
 import dev.emyth.app.data.service.SupabaseSyncService
 import dev.emyth.app.service.ChatService
@@ -96,6 +97,7 @@ class EmythApp : Application() {
         runCatching { get<ChatService>() }.onFailure { e ->
             android.util.Log.e(TAG, "Failed to pre-warm ChatService singleton", e)
         }
+        startEditProtectionDispatch(this, get<AppScope>())
 
         // set cursor window size to 32MB
         DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)

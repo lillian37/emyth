@@ -31,6 +31,8 @@ import dev.emyth.app.data.model.Tag
 import dev.emyth.app.data.db.entity.WorkspaceEntity
 import dev.emyth.app.data.repository.MemoryRepository
 import dev.emyth.app.data.repository.WorkspaceRepository
+import dev.emyth.app.data.editprotection.ProtectedEditDeniedException
+import kotlinx.coroutines.CancellationException
 import kotlin.uuid.Uuid
 
 private const val TAG = "AssistantDetailVM"
@@ -44,6 +46,30 @@ class AssistantDetailVM(
     private val workspaceRepository: WorkspaceRepository,
 ) : ViewModel() {
     private val assistantId = Uuid.parse(id)
+    private val _editError = MutableStateFlow<String?>(null)
+    val editError = _editError.asStateFlow()
+
+    fun dismissEditError() {
+        _editError.value = null
+    }
+
+    private fun launchEdit(onFinished: ((Boolean) -> Unit)? = null, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+                onFinished?.invoke(true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ProtectedEditDeniedException) {
+                _editError.value = e.message ?: "编辑已被拦截，请先与助手协商授权。"
+                onFinished?.invoke(false)
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to save assistant changes", e)
+                _editError.value = "修改未能保存，请稍后重试。"
+                onFinished?.invoke(false)
+            }
+        }
+    }
 
     private val _skills = MutableStateFlow<List<SkillMetadata>>(emptyList())
     val skills = _skills.asStateFlow()
@@ -119,7 +145,7 @@ class AssistantDetailVM(
     }
 
     fun updateTags(tagIds: List<Uuid>, tags: List<Tag>) {
-        viewModelScope.launch {
+        launchEdit {
             val settings = settings.value
             settingsStore.update(
                 settings = settings.copy(
@@ -137,7 +163,7 @@ class AssistantDetailVM(
     }
 
     fun cleanupUnusedTags() {
-        viewModelScope.launch {
+        launchEdit {
             val settings = settings.value
             val validTagIds = settings.assistantTags.map { it.id }.toSet()
 
@@ -177,25 +203,30 @@ class AssistantDetailVM(
     }
 
     fun update(assistant: Assistant) {
-        viewModelScope.launch {
+        launchEdit {
             val settings = settings.value
+            if (settings.init) return@launchEdit
+            val previous = settings.assistants.find { it.id == assistant.id } ?: return@launchEdit
             settingsStore.update(
                 settings = settings.copy(
                     assistants = settings.assistants.map {
                         if (it.id == assistant.id) {
-                            checkAvatarDelete(old = it, new = assistant) // 删除旧头像
-                            checkBackgroundDelete(old = it, new = assistant) // 删除旧背景
                             assistant
                         } else {
                             it
                         }
                     })
             )
+            // Rejected edits must not delete files belonging to the unchanged assistant.
+            runCatching {
+                checkAvatarDelete(old = previous, new = assistant)
+                checkBackgroundDelete(old = previous, new = assistant)
+            }.onFailure { Log.w(TAG, "Assistant saved; old attachment cleanup failed", it) }
         }
     }
 
-    fun addMemory(memory: AssistantMemory) {
-        viewModelScope.launch {
+    fun addMemory(memory: AssistantMemory, onFinished: (Boolean) -> Unit = {}) {
+        launchEdit(onFinished) {
             val memoryAssistantId = if (assistant.value.useGlobalMemory) {
                 MemoryRepository.GLOBAL_MEMORY_ID
             } else {
@@ -208,14 +239,14 @@ class AssistantDetailVM(
         }
     }
 
-    fun updateMemory(memory: AssistantMemory) {
-        viewModelScope.launch {
+    fun updateMemory(memory: AssistantMemory, onFinished: (Boolean) -> Unit = {}) {
+        launchEdit(onFinished) {
             memoryRepository.updateContent(id = memory.id, content = memory.content)
         }
     }
 
     fun deleteMemory(memory: AssistantMemory) {
-        viewModelScope.launch {
+        launchEdit {
             memoryRepository.deleteMemory(id = memory.id)
         }
     }

@@ -92,6 +92,7 @@ import dev.emyth.app.ui.components.message.visibleChatNodeIndex
 import dev.emyth.app.ui.components.message.visibleChatNodes
 import dev.emyth.app.ui.context.LocalNavController
 import dev.emyth.app.ui.context.LocalToaster
+import dev.emyth.app.ui.components.ui.EditProtectionFeedback
 import dev.emyth.app.ui.context.Navigator
 import dev.emyth.app.ui.hooks.ChatInputState
 import dev.emyth.app.ui.hooks.EditStateContent
@@ -117,6 +118,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
 
     val setting by vm.settings.collectAsStateWithLifecycle()
     val conversation by vm.conversation.collectAsStateWithLifecycle()
+    EditProtectionFeedback(vm.editProtectionError, vm::dismissEditProtectionError)
     val loadingJob by vm.conversationJob.collectAsStateWithLifecycle()
     val processingStatus by vm.processingStatus.collectAsStateWithLifecycle()
     val currentChatModel by vm.currentChatModel.collectAsStateWithLifecycle()
@@ -567,8 +569,7 @@ private fun ChatPageContent(
                     vm.toggleMessageFavorite(node)
                 },
                 onConversationSystemPromptChange = { newPrompt ->
-                    vm.updateConversation(conversation.copy(customSystemPrompt = newPrompt))
-                    vm.saveConversationAsync()
+                    vm.updateConversationSystemPrompt(newPrompt)
                 },
             )
         }

@@ -6,6 +6,7 @@
 
 package dev.emyth.app.data.repository
 
+import android.content.Context
 import android.database.sqlite.SQLiteBlobTooBigException
 import android.util.Log
 import androidx.paging.Pager
@@ -19,6 +20,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import dev.emyth.app.data.db.AppDatabase
@@ -31,6 +34,10 @@ import dev.emyth.app.data.db.entity.ConversationEntity
 import dev.emyth.app.data.db.entity.MessageNodeEntity
 import dev.emyth.app.data.files.FilesManager
 import dev.emyth.app.data.model.Conversation
+import dev.emyth.app.data.editprotection.EditProtectionStore
+import dev.emyth.app.data.editprotection.ProtectedConversationPrompt
+import dev.emyth.app.data.editprotection.ProtectedEditChange
+import dev.emyth.app.data.editprotection.conversationProtectedChanges
 import dev.emyth.app.data.model.MessageNode
 import dev.emyth.app.utils.JsonInstant
 import java.time.Instant
@@ -45,7 +52,22 @@ class ConversationRepository(
     private val database: AppDatabase,
     private val filesManager: FilesManager,
     private val messageFtsManager: MessageFtsManager,
+    context: Context,
 ) {
+    private val editProtection = EditProtectionStore.get(context)
+    private val mutationMutex = Mutex()
+
+    private fun ConversationEntity.protectedPrompt() = ProtectedConversationPrompt(
+        assistantId, id, customSystemPrompt,
+    )
+
+    private fun Conversation.protectedPrompt() = ProtectedConversationPrompt(
+        assistantId.toString(), id.toString(), customSystemPrompt,
+    )
+
+    private suspend fun <T> protectedMutation(changes: List<ProtectedEditChange>, block: suspend () -> T): T =
+        if (changes.isEmpty()) block() else editProtection.mutate(changes, block = block)
+
     companion object {
         private const val PAGE_SIZE = 20
         private const val INITIAL_LOAD_SIZE = 40
@@ -241,15 +263,25 @@ class ConversationRepository(
         return conversationDAO.existsById(uuid.toString())
     }
 
-    suspend fun insertConversation(conversation: Conversation) {
+    suspend fun insertConversation(
+        conversation: Conversation,
+        onStateReady: (() -> Unit)? = null,
+    ): Unit = mutationMutex.withLock {
+        val old = conversationDAO.getConversationById(conversation.id.toString())
+        val changes = conversationProtectedChanges(old?.protectedPrompt(), conversation.protectedPrompt())
+        // Decide under the same mutex as the real write, so concurrent prompt edits cannot reclassify it.
+        if (changes.isEmpty()) onStateReady?.invoke()
         try {
-            database.withTransaction {
-                conversationDAO.insert(
-                    conversationToConversationEntity(conversation)
-                )
-                saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+            protectedMutation(changes) {
+                database.withTransaction {
+                    conversationDAO.insert(
+                        conversationToConversationEntity(conversation)
+                    )
+                    saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+                }
+                messageFtsManager.indexConversation(conversation)
             }
-            messageFtsManager.indexConversation(conversation)
+            if (changes.isNotEmpty()) onStateReady?.invoke()
         } catch (e: Exception) {
             Log.e(TAG, "insertConversation failed, conversationId=${conversation.id}", e)
             throw e
@@ -270,92 +302,99 @@ class ConversationRepository(
      *
      * FTS 索引也同步降级为只处理这批发生变化的 node，而不是整个对话重建。
      */
-    suspend fun updateConversation(conversation: Conversation) {
+    suspend fun updateConversation(
+        conversation: Conversation,
+        onStateReady: (() -> Unit)? = null,
+    ): Unit = mutationMutex.withLock {
+        val old = conversationDAO.getConversationById(conversation.id.toString())
+        val changes = conversationProtectedChanges(old?.protectedPrompt(), conversation.protectedPrompt())
+        if (changes.isEmpty()) onStateReady?.invoke()
         try {
-            database.withTransaction {
-                conversationDAO.update(
-                    conversationToConversationEntity(conversation)
-                )
-
-                // 只查 id，不碰 messages 列，避免因个别行 blob 过大导致这里直接抛异常
-                val existingIds = messageNodeDAO.getNodeIdsOfConversation(conversation.id.toString()).toSet()
-
-                val newEntities = conversation.messageNodes.mapIndexed { index, node ->
-                    MessageNodeEntity(
-                        id = node.id.toString(),
-                        conversationId = conversation.id.toString(),
-                        nodeIndex = index,
-                        messages = JsonInstant.encodeToString(node.messages),
-                        selectIndex = node.selectIndex
+            protectedMutation(changes) {
+                database.withTransaction {
+                    conversationDAO.update(
+                        conversationToConversationEntity(conversation)
                     )
-                }
-                val newById = newEntities.associateBy { it.id }
 
-                // 只对本轮涉及、且之前已存在的 id 去查内容做比较，缩小命中超大行的范围
-                val idsNeedCompare = newEntities.map { it.id }.filter { it in existingIds }
-                val existingById = if (idsNeedCompare.isEmpty()) {
-                    emptyMap()
-                } else {
-                    try {
-                        messageNodeDAO.getNodesByIds(idsNeedCompare).associateBy { it.id }
-                    } catch (e: SQLiteBlobTooBigException) {
-                        Log.w(
-                            TAG,
-                            "updateConversation: blob too big while comparing existing nodes, " +
-                                "conversationId=${conversation.id}, will treat all as changed and overwrite",
-                            e
+                    // 只查 id，不碰 messages 列，避免因个别行 blob 过大导致这里直接抛异常
+                    val existingIds = messageNodeDAO.getNodeIdsOfConversation(conversation.id.toString()).toSet()
+
+                    val newEntities = conversation.messageNodes.mapIndexed { index, node ->
+                        MessageNodeEntity(
+                            id = node.id.toString(),
+                            conversationId = conversation.id.toString(),
+                            nodeIndex = index,
+                            messages = JsonInstant.encodeToString(node.messages),
+                            selectIndex = node.selectIndex
                         )
-                        // 读不出旧内容就没法比较，保守地当作全部有变化，直接覆盖写入（REPLACE，安全）
+                    }
+                    val newById = newEntities.associateBy { it.id }
+
+                    // 只对本轮涉及、且之前已存在的 id 去查内容做比较，缩小命中超大行的范围
+                    val idsNeedCompare = newEntities.map { it.id }.filter { it in existingIds }
+                    val existingById = if (idsNeedCompare.isEmpty()) {
                         emptyMap()
+                    } else {
+                        try {
+                            messageNodeDAO.getNodesByIds(idsNeedCompare).associateBy { it.id }
+                        } catch (e: SQLiteBlobTooBigException) {
+                            Log.w(
+                                TAG,
+                                "updateConversation: blob too big while comparing existing nodes, " +
+                                    "conversationId=${conversation.id}, will treat all as changed and overwrite",
+                                e
+                            )
+                            // 读不出旧内容就没法比较，保守地当作全部有变化，直接覆盖写入（REPLACE，安全）
+                            emptyMap()
+                        }
+                    }
+
+                    // 只处理真正发生变化的 node：内容/顺序(nodeIndex)/selectIndex 有任何不同才写库；
+                    // 读不到旧内容的（existingById 里没有对应 id）也会被判定为"变化"，直接覆盖写入
+                    val toUpsert = newEntities.filter { newEntity ->
+                        existingById[newEntity.id] != newEntity
+                    }
+                    val toDeleteIds = existingIds - newById.keys
+
+                    if (toDeleteIds.isNotEmpty()) {
+                        messageNodeDAO.deleteByIds(toDeleteIds.toList())
+                    }
+                    if (toUpsert.isNotEmpty()) {
+                        messageNodeDAO.insertAll(toUpsert)
+                    }
+
+                    val changedNodeIds = toUpsert.map { it.id }.toSet() + toDeleteIds
+                    if (changedNodeIds.isNotEmpty()) {
+                        messageFtsManager.reindexNodes(
+                            conversationId = conversation.id.toString(),
+                            conversationTitle = conversation.title,
+                            updateAt = conversation.updateAt,
+                            changedNodeIds = changedNodeIds,
+                            currentNodes = conversation.messageNodes,
+                        )
                     }
                 }
-
-                // 只处理真正发生变化的 node：内容/顺序(nodeIndex)/selectIndex 有任何不同才写库；
-                // 读不到旧内容的（existingById 里没有对应 id）也会被判定为"变化"，直接覆盖写入
-                val toUpsert = newEntities.filter { newEntity ->
-                    existingById[newEntity.id] != newEntity
-                }
-                val toDeleteIds = existingIds - newById.keys
-
-                if (toDeleteIds.isNotEmpty()) {
-                    messageNodeDAO.deleteByIds(toDeleteIds.toList())
-                }
-                if (toUpsert.isNotEmpty()) {
-                    messageNodeDAO.insertAll(toUpsert)
-                }
-
-                val changedNodeIds = toUpsert.map { it.id }.toSet() + toDeleteIds
-                if (changedNodeIds.isNotEmpty()) {
-                    messageFtsManager.reindexNodes(
-                        conversationId = conversation.id.toString(),
-                        conversationTitle = conversation.title,
-                        updateAt = conversation.updateAt,
-                        changedNodeIds = changedNodeIds,
-                        currentNodes = conversation.messageNodes,
-                    )
-                }
             }
+            if (changes.isNotEmpty()) onStateReady?.invoke()
         } catch (e: Exception) {
             Log.e(TAG, "updateConversation failed, conversationId=${conversation.id}", e)
             throw e
         }
     }
 
-    suspend fun deleteConversation(conversation: Conversation) {
+    suspend fun deleteConversation(conversation: Conversation) = mutationMutex.withLock {
         try {
-            // 获取完整的 Conversation（包含 messageNodes）以正确清理文件
-            val fullConversation = if (conversation.messageNodes.isEmpty()) {
-                getConversationById(conversation.id) ?: conversation
-            } else {
-                conversation
+            val existing = conversationDAO.getConversationById(conversation.id.toString()) ?: return@withLock
+            val fullConversation = getConversationById(conversation.id) ?: return@withLock
+            val changes = conversationProtectedChanges(existing.protectedPrompt(), null)
+            protectedMutation(changes) {
+                database.withTransaction {
+                    messageFtsManager.deleteConversation(conversation.id.toString())
+                    // message_node is deleted by the existing foreign-key cascade.
+                    conversationDAO.delete(existing)
+                }
             }
-            messageFtsManager.deleteConversation(conversation.id.toString())
-            database.withTransaction {
-                // message_node 会通过 CASCADE 自动删除
-                conversationDAO.delete(
-                    conversationToConversationEntity(conversation)
-                )
-            }
+            // File cleanup happens only after the protected deletion was authorized and committed.
             filesManager.deleteChatFiles(fullConversation.files)
         } catch (e: Exception) {
             Log.e(TAG, "deleteConversation failed, conversationId=${conversation.id}", e)
@@ -396,10 +435,21 @@ class ConversationRepository(
         }
     }
 
-    suspend fun deleteConversationOfAssistant(assistantId: Uuid) {
-        getConversationsOfAssistant(assistantId).first().forEach { conversation ->
-            deleteConversation(conversation)
+    suspend fun deleteConversationOfAssistant(assistantId: Uuid) = mutationMutex.withLock {
+        val conversations = getConversationsOfAssistant(assistantId).first()
+        val existing = conversations.mapNotNull {
+            conversationDAO.getConversationById(it.id.toString())
         }
+        val changes = existing.flatMap { conversationProtectedChanges(it.protectedPrompt(), null) }
+        protectedMutation(changes) {
+            database.withTransaction {
+                existing.forEach { row ->
+                    messageFtsManager.deleteConversation(row.id)
+                    conversationDAO.delete(row)
+                }
+            }
+        }
+        conversations.forEach { filesManager.deleteChatFiles(it.files) }
     }
 
     fun conversationToConversationEntity(conversation: Conversation): ConversationEntity {

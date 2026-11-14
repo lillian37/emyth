@@ -391,6 +391,8 @@ private fun ChatListNormal(
                     ConversationSystemPromptButton(
                         customSystemPrompt = conversation.customSystemPrompt,
                         onSystemPromptChange = onConversationSystemPromptChange,
+                        assistantId = conversation.assistantId.toString(),
+                        conversationId = conversation.id.toString(),
                     )
                 }
             }

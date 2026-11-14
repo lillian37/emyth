@@ -31,12 +31,22 @@ import androidx.compose.ui.unit.dp
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Setting07
 import dev.emyth.app.R
+import dev.emyth.app.data.editprotection.ProtectedEditScope
+import dev.emyth.app.ui.pages.assistant.detail.rememberEditPermissionRequest
+import dev.emyth.app.ui.pages.assistant.detail.rememberEditProtectionStatus
 
 @Composable
 fun ConversationSystemPromptButton(
     customSystemPrompt: String?,
     onSystemPromptChange: (String?) -> Unit,
+    assistantId: String? = null,
+    conversationId: String? = null,
 ) {
+    val protection = if (assistantId != null) rememberEditProtectionStatus(assistantId) else null
+    val canEdit = protection?.editingAllowed != false
+    val requestEdit = if (assistantId != null) {
+        rememberEditPermissionRequest(assistantId, ProtectedEditScope.CONVERSATION_PROMPT, conversationId)
+    } else null
     var expanded by rememberSaveable { mutableStateOf(false) }
     var editText by rememberSaveable(customSystemPrompt) {
         mutableStateOf(customSystemPrompt ?: "")
@@ -79,12 +89,13 @@ fun ConversationSystemPromptButton(
                     label = { Text(stringResource(R.string.chat_page_conversation_system_prompt_hint)) },
                     minLines = 3,
                     maxLines = 8,
+                    readOnly = !canEdit,
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.align(Alignment.End),
                 ) {
-                    if (!customSystemPrompt.isNullOrBlank()) {
+                    if (canEdit && !customSystemPrompt.isNullOrBlank()) {
                         TextButton(
                             onClick = {
                                 editText = ""
@@ -94,13 +105,17 @@ fun ConversationSystemPromptButton(
                             Text(stringResource(R.string.chat_page_conversation_system_prompt_clear))
                         }
                     }
-                    TextButton(
-                        onClick = {
-                            onSystemPromptChange(editText.ifBlank { null })
-                            expanded = false
-                        },
-                    ) {
-                        Text(stringResource(R.string.chat_page_conversation_system_prompt_save))
+                    if (canEdit) {
+                        TextButton(
+                            onClick = {
+                                onSystemPromptChange(editText.ifBlank { null })
+                                expanded = false
+                            },
+                        ) {
+                            Text(stringResource(R.string.chat_page_conversation_system_prompt_save))
+                        }
+                    } else {
+                        TextButton(onClick = { requestEdit?.invoke() }) { Text("请求编辑权限") }
                     }
                 }
             }
