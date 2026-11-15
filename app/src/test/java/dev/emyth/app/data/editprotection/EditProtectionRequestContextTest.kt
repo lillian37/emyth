@@ -38,7 +38,8 @@ class EditProtectionRequestContextTest {
         assertEquals(1, user.parts.size)
         assertTrue(text(result.last()).contains("不是用户发言"))
         assertTrue(text(result.last()).contains("actual user words"))
-        assertFalse(text(result.last()).contains("BLOCKED"))
+        // 状态行文案本身含 BLOCKED 字样，事件摘要才是区分普通轮不重放事件的依据。
+        assertFalse(text(result.last()).contains("blocked edit"))
     }
 
     @Test
