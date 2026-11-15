@@ -53,28 +53,33 @@ internal fun appendEditProtectionContext(
     events: List<EditProtectionEvent>,
     includeOtherConversations: Boolean = false,
 ): List<UIMessage> {
-    val relevant = events.filter {
-        it.assistantId == assistantId && (includeOtherConversations || conversationId == null ||
-            it.conversationId == null || it.conversationId == conversationId)
-    }.sortedBy { it.atMillis }.takeLast(4)
+    // 普通轮次只注入状态，不重复带历史事件；只有唤醒 override 的轮次才带最近事件流水。
+    val relevant = if (includeOtherConversations) {
+        events.filter {
+            it.assistantId == assistantId && (conversationId == null ||
+                it.conversationId == null || it.conversationId == conversationId)
+        }.sortedBy { it.atMillis }.takeLast(4)
+    } else emptyList()
     if (!status.enabled && relevant.isEmpty()) return messages
     val data = buildJsonObject {
         put("assistant_id", assistantId)
         put("protection_enabled", status.enabled)
         put("human_editing_allowed", status.editingAllowed)
         status.grantedUntilMillis?.let { put("granted_until", java.time.Instant.ofEpochMilli(it).toString()) }
-        put("events", buildJsonArray {
-            relevant.forEach { event ->
-                add(buildJsonObject {
-                    put("id", event.id)
-                    put("at", java.time.Instant.ofEpochMilli(event.atMillis).toString())
-                    put("kind", event.kind.name)
-                    event.scope?.let { put("scope", it.name) }
-                    event.conversationId?.let { put("conversation_id", it) }
-                    put("summary", event.summary)
-                })
-            }
-        })
+        if (relevant.isNotEmpty()) {
+            put("events", buildJsonArray {
+                relevant.forEach { event ->
+                    add(buildJsonObject {
+                        put("id", event.id)
+                        put("at", java.time.Instant.ofEpochMilli(event.atMillis).toString())
+                        put("kind", event.kind.name)
+                        event.scope?.let { put("scope", it.name) }
+                        event.conversationId?.let { put("conversation_id", it) }
+                        put("summary", event.summary)
+                    })
+                }
+            })
+        }
     }
     val part = UIMessagePart.Text(
         text = """
