@@ -184,7 +184,7 @@ internal class EditProtectionEngine(
             var blocked = snapshot
             denied.distinctBy { Triple(it.assistantId, it.scope, it.conversationId) }.forEach { change ->
                 blocked = blockedWithEvent(blocked, change.assistantId, change.scope, change.conversationId,
-                    "修改已拦截，内容未改变。" + change.summary.take(1_200))
+                    "修改已拦截，内容未改变。" + change.summary.take(400))
             }
             write(blocked)
             throw ProtectedEditDeniedException(denied.first().assistantId, denied.first().scope)
@@ -197,7 +197,7 @@ internal class EditProtectionEngine(
         // Persist the attempt first: a crash or a second persistence failure must not invent success.
         val attempts = audited.map { change ->
             event(change.assistantId, change.conversationId, EditProtectionEventKind.CHANGE_PENDING,
-                change.scope, "授权范围内的修改正在保存，结果尚未确认。" + change.summary.take(1_200))
+                change.scope, "授权范围内的修改正在保存，结果尚未确认。" + change.summary.take(400))
         }
         var pending = snapshot
         attempts.forEach { pending = pending.append(it, wake = true) }
@@ -205,7 +205,7 @@ internal class EditProtectionEngine(
         try {
             val result = block()
             write(read().finishAttempts(attempts, EditProtectionEventKind.CHANGED,
-                audited.map { "授权范围内的修改已保存。" + it.summary.take(1_200) }))
+                audited.map { "授权范围内的修改已保存。" + it.summary.take(400) }))
             result
         } catch (failure: Throwable) {
             // Keep an already committed CHANGED record if only later cleanup failed.
@@ -214,7 +214,7 @@ internal class EditProtectionEngine(
                     it.id == attempt.id && it.kind == EditProtectionEventKind.CHANGE_PENDING
                 } }) {
                 runCatching { write(latest.finishAttempts(attempts, EditProtectionEventKind.CHANGE_FAILED,
-                    audited.map { "保存未能正常结束，修改结果需核对。" + it.summary.take(1_200) })) }
+                    audited.map { "保存未能正常结束，修改结果需核对。" + it.summary.take(400) })) }
             }
             throw failure
         }
@@ -333,7 +333,7 @@ internal class EditProtectionEngine(
         kind: EditProtectionEventKind,
         scope: ProtectedEditScope? = null,
         summary: String,
-    ) = EditProtectionEvent(nextId(), assistantId, conversationId, clock().wallMillis, kind, scope, summary.take(1_536))
+    ) = EditProtectionEvent(nextId(), assistantId, conversationId, clock().wallMillis, kind, scope, summary.take(512))
 
     private fun EditProtectionSnapshot.withAssistant(id: String, value: AssistantEditProtection) =
         copy(assistants = assistants + (id to value))
@@ -365,7 +365,7 @@ internal class EditProtectionEngine(
     ): EditProtectionSnapshot {
         val byId = attempts.mapIndexed { index, event -> event.id to summaries[index] }.toMap()
         return copy(events = events.map {
-            byId[it.id]?.let { summary -> it.copy(kind = kind, summary = summary.take(1_536)) } ?: it
+            byId[it.id]?.let { summary -> it.copy(kind = kind, summary = summary.take(512)) } ?: it
         })
     }
 

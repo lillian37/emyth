@@ -121,10 +121,10 @@ internal fun protectedTextDifference(label: String, before: String?, after: Stri
     ) suffix++
     fun excerpt(value: String): String {
         if (value.isEmpty()) return "（空）"
-        val start = (prefix - 40).coerceAtLeast(0)
-        val end = (value.length - suffix + 40).coerceAtMost(value.length)
+        val start = (prefix - 30).coerceAtLeast(0)
+        val end = (value.length - suffix + 30).coerceAtMost(value.length)
         val region = value.substring(start.coerceAtMost(end), end)
-        val bounded = if (region.length <= 360) region else region.take(280) + "…" + region.takeLast(60)
+        val bounded = if (region.length <= 160) region else region.take(120) + "…" + region.takeLast(40)
         return (if (start > 0) "…" else "") + bounded + if (end < value.length) "…" else ""
     }
     return "$label\n修改前（${old.length}字）：${excerpt(old)}\n修改后（${current.length}字）：${excerpt(current)}"
