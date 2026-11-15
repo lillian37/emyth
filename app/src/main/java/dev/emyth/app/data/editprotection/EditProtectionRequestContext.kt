@@ -54,11 +54,9 @@ internal fun appendEditProtectionContext(
     includeOtherConversations: Boolean = false,
 ): List<UIMessage> {
     // 普通轮次只注入状态，不重复带历史事件；只有唤醒 override 的轮次才带最近事件流水。
+    // includeOtherConversations 仅由唤醒 override 置真，按原语义包含该助手的全部 claimed 事件，只排除别的助手。
     val relevant = if (includeOtherConversations) {
-        events.filter {
-            it.assistantId == assistantId && (conversationId == null ||
-                it.conversationId == null || it.conversationId == conversationId)
-        }.sortedBy { it.atMillis }.takeLast(4)
+        events.filter { it.assistantId == assistantId }.sortedBy { it.atMillis }.takeLast(4)
     } else emptyList()
     if (!status.enabled && relevant.isEmpty()) return messages
     val data = buildJsonObject {

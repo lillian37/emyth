@@ -38,20 +38,36 @@ class EditProtectionRequestContextTest {
         assertEquals(1, user.parts.size)
         assertTrue(text(result.last()).contains("不是用户发言"))
         assertTrue(text(result.last()).contains("actual user words"))
-        assertTrue(text(result.last()).contains("BLOCKED"))
+        assertFalse(text(result.last()).contains("BLOCKED"))
     }
 
     @Test
-    fun ordinaryRequestsDoNotReadAnotherAssistantOrPrivateConversation() {
+    fun ordinaryRequestsReplayNoHistoricalEventsAndKeepOnlyTheStatusLine() {
         val result = appendEditProtectionContext(
             listOf(UIMessage.user("hello")), "a", "chat", locked,
             listOf(event("a", "chat", "same"), event("a", "other", "other-chat"),
                 event("b", "chat", "other-assistant"), event("a", null, "shared")),
         )
         val content = text(result.last())
+        assertTrue(content.contains("protection_enabled"))
+        assertFalse(content.contains("same"))
+        assertFalse(content.contains("shared"))
+        assertFalse(content.contains("other-chat"))
+        assertFalse(content.contains("other-assistant"))
+    }
+
+    @Test
+    fun wakeReceiptFiltersOutOtherAssistantsButIncludesEveryClaimedEvent() {
+        val result = appendEditProtectionContext(
+            listOf(UIMessage.user("wake")), "a", "chat", locked,
+            listOf(event("a", "chat", "same"), event("a", "other", "other-chat"),
+                event("b", "chat", "other-assistant"), event("a", null, "shared")),
+            includeOtherConversations = true,
+        )
+        val content = text(result.last())
         assertTrue(content.contains("same"))
         assertTrue(content.contains("shared"))
-        assertFalse(content.contains("other-chat"))
+        assertTrue(content.contains("other-chat"))
         assertFalse(content.contains("other-assistant"))
     }
 
@@ -72,9 +88,11 @@ class EditProtectionRequestContextTest {
     fun rebuildingTheSameRequestReplacesOnlyTheAppPart() {
         val initial = appendEditProtectionContext(
             listOf(UIMessage.user("user")), "a", "chat", locked, listOf(event("a", null, "before")),
+            includeOtherConversations = true,
         )
         val updated = appendEditProtectionContext(
             initial, "a", "chat", locked, listOf(event("a", null, "after")),
+            includeOtherConversations = true,
         )
         assertEquals(2, updated.single().parts.size)
         assertFalse(text(updated.single()).contains("before"))
