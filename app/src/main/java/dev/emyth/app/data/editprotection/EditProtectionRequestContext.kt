@@ -58,7 +58,8 @@ internal fun appendEditProtectionContext(
     val relevant = if (includeOtherConversations) {
         events.filter { it.assistantId == assistantId }.sortedBy { it.atMillis }.takeLast(4)
     } else emptyList()
-    if (!status.enabled && relevant.isEmpty()) return messages
+    // 普通轮次不再注入锁状态；只有编辑保护事件唤醒轮（includeOtherConversations=true）才带记录。
+    if (relevant.isEmpty()) return messages
     val data = buildJsonObject {
         put("assistant_id", assistantId)
         put("protection_enabled", status.enabled)

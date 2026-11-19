@@ -2,7 +2,6 @@ package dev.emyth.app.data.editprotection
 
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
@@ -29,7 +28,10 @@ class EditProtectionRequestContextTest {
         val previous = UIMessage.assistant("stable history")
         val user = UIMessage.user("actual user words")
         val original = listOf(system, previous, user)
-        val result = appendEditProtectionContext(original, "a", "chat", locked, listOf(event("a", "chat")))
+        val result = appendEditProtectionContext(
+            original, "a", "chat", locked, listOf(event("a", "chat")),
+            includeOtherConversations = true,
+        )
 
         assertSame(system, result[0])
         assertSame(previous, result[1])
@@ -39,22 +41,18 @@ class EditProtectionRequestContextTest {
         assertTrue(text(result.last()).contains("不是用户发言"))
         assertTrue(text(result.last()).contains("actual user words"))
         // 状态行文案本身含 BLOCKED 字样，事件摘要才是区分普通轮不重放事件的依据。
-        assertFalse(text(result.last()).contains("blocked edit"))
+        assertTrue(text(result.last()).contains("blocked edit"))
     }
 
     @Test
-    fun ordinaryRequestsReplayNoHistoricalEventsAndKeepOnlyTheStatusLine() {
+    fun ordinaryRequestsAreLeftUntouchedEvenWhileLocked() {
+        val original = listOf(UIMessage.user("hello"))
         val result = appendEditProtectionContext(
-            listOf(UIMessage.user("hello")), "a", "chat", locked,
+            original, "a", "chat", locked,
             listOf(event("a", "chat", "same"), event("a", "other", "other-chat"),
                 event("b", "chat", "other-assistant"), event("a", null, "shared")),
         )
-        val content = text(result.last())
-        assertTrue(content.contains("protection_enabled"))
-        assertFalse(content.contains("same"))
-        assertFalse(content.contains("shared"))
-        assertFalse(content.contains("other-chat"))
-        assertFalse(content.contains("other-assistant"))
+        assertSame(original, result)
     }
 
     @Test
@@ -102,12 +100,10 @@ class EditProtectionRequestContextTest {
     }
 
     @Test
-    fun toolOnlyRequestsGetAClearlyLabelledApplicationContext() {
+    fun toolOnlyRequestsWithoutEventsStayUntouched() {
         val original = listOf(UIMessage.system("persona"))
         val result = appendEditProtectionContext(original, "a", null, locked, emptyList())
-        assertEquals(MessageRole.USER, result.last().role)
-        assertTrue(text(result.last()).startsWith("[应用追加的编辑保护记录"))
-        assertEquals(1, original.size)
+        assertSame(original, result)
     }
 
     @Test
