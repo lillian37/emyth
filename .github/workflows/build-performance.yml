@@ -58,6 +58,12 @@ jobs:
         working-directory: web-ui
         run: pnpm install --frozen-lockfile
 
+      - name: Check web message visibility
+        working-directory: web-ui
+        run: |
+          pnpm typecheck
+          pnpm exec tsx --test app/lib/message-visibility.test.ts
+
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
@@ -108,3 +114,4 @@ jobs:
           path: app/build/outputs/mapping/performance/mapping.txt
           if-no-files-found: ignore
           retention-days: 14
+

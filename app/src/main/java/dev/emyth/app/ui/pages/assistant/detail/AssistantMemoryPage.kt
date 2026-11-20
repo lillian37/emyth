@@ -54,10 +54,12 @@ import androidx.compose.ui.util.fastForEach
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.emyth.app.R
 import dev.emyth.app.data.model.Assistant
+import dev.emyth.app.data.editprotection.ProtectedEditScope
 import dev.emyth.app.data.model.AssistantMemory
 import dev.emyth.app.data.model.ExternalMemory
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
+import dev.emyth.app.ui.components.ui.EditProtectionFeedback
 import dev.emyth.app.ui.components.ui.RikkaConfirmDialog
 import dev.emyth.app.ui.hooks.EditStateContent
 import dev.emyth.app.ui.hooks.useEditState
@@ -74,6 +76,10 @@ fun AssistantMemoryPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val editError by vm.editError.collectAsStateWithLifecycle()
+    EditProtectionFeedback(editError, vm::dismissEditError)
+    val protection = rememberEditProtectionStatus(id)
+    val requestEdit = rememberEditPermissionRequest(id, ProtectedEditScope.BUILTIN_MEMORY)
     val memories by vm.memories.collectAsStateWithLifecycle()
     val externalMemories by vm.externalMemories.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -97,12 +103,15 @@ fun AssistantMemoryPage(id: String) {
         AssistantMemoryContent(
             modifier = Modifier.padding(innerPadding),
             assistant = assistant,
+            assistantId = id,
+            canEditMemory = protection.editingAllowed,
+            onRequestEdit = requestEdit,
             memories = memories,
             externalMemories = externalMemories,
             onUpdateAssistant = { vm.update(it) },
             onDeleteMemory = { vm.deleteMemory(it) },
-            onAddMemory = { vm.addMemory(it) },
-            onUpdateMemory = { vm.updateMemory(it) },
+            onAddMemory = { memory, onFinished -> vm.addMemory(memory, onFinished) },
+            onUpdateMemory = { memory, onFinished -> vm.updateMemory(memory, onFinished) },
             onUpdateExternalMemoryIds = { vm.updateExternalMemoryIds(it) }
         )
     }
@@ -112,21 +121,19 @@ fun AssistantMemoryPage(id: String) {
 private fun AssistantMemoryContent(
     modifier: Modifier = Modifier,
     assistant: Assistant,
+    assistantId: String,
+    canEditMemory: Boolean,
+    onRequestEdit: () -> Unit,
     memories: List<AssistantMemory>,
     externalMemories: List<ExternalMemory>,
     onUpdateAssistant: (Assistant) -> Unit,
-    onAddMemory: (AssistantMemory) -> Unit,
-    onUpdateMemory: (AssistantMemory) -> Unit,
+    onAddMemory: (AssistantMemory, (Boolean) -> Unit) -> Unit,
+    onUpdateMemory: (AssistantMemory, (Boolean) -> Unit) -> Unit,
     onDeleteMemory: (AssistantMemory) -> Unit,
     onUpdateExternalMemoryIds: (Set<Uuid>) -> Unit,
 ) {
-    val memoryDialogState = useEditState<AssistantMemory> {
-        if (it.id == 0) {
-            onAddMemory(it)
-        } else {
-            onUpdateMemory(it)
-        }
-    }
+    val memoryDialogState = useEditState<AssistantMemory> {}
+    var memorySaving by remember { mutableStateOf(false) }
     var pendingDeleteMemory by remember { mutableStateOf<AssistantMemory?>(null) }
     var showExternalMemoryPicker by remember { mutableStateOf(false) }
 
@@ -134,7 +141,7 @@ private fun AssistantMemoryContent(
     memoryDialogState.EditStateContent { memory, update ->
         AlertDialog(
             onDismissRequest = {
-                memoryDialogState.dismiss()
+                if (!memorySaving) memoryDialogState.dismiss()
             },
             title = {
                 Text(stringResource(R.string.assistant_page_manage_memory_title))
@@ -149,23 +156,39 @@ private fun AssistantMemoryContent(
                         Text(stringResource(R.string.assistant_page_manage_memory_title))
                     },
                     minLines = 2,
-                    maxLines = 8
+                    maxLines = 8,
+                    readOnly = !canEditMemory || memorySaving,
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        memoryDialogState.confirm()
-                    }
+                        if (canEditMemory) {
+                            memorySaving = true
+                            val onFinished: (Boolean) -> Unit = { saved ->
+                                memorySaving = false
+                                if (saved) memoryDialogState.dismiss()
+                            }
+                            if (memory.id == 0) {
+                                onAddMemory(memory, onFinished)
+                            } else {
+                                onUpdateMemory(memory, onFinished)
+                            }
+                        } else {
+                            onRequestEdit()
+                        }
+                    },
+                    enabled = !memorySaving,
                 ) {
-                    Text(stringResource(R.string.assistant_page_save))
+                    Text(if (canEditMemory) stringResource(R.string.assistant_page_save) else "请求编辑权限")
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = {
                         memoryDialogState.dismiss()
-                    }
+                    },
+                    enabled = !memorySaving,
                 ) {
                     Text(stringResource(R.string.assistant_page_cancel))
                 }
@@ -181,6 +204,7 @@ private fun AssistantMemoryContent(
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        EditProtectionNotice(assistantId, ProtectedEditScope.BUILTIN_MEMORY, onRequest = onRequestEdit)
         CardGroup {
             item(
                 headlineContent = { Text(stringResource(R.string.assistant_page_memory)) },
@@ -294,7 +318,7 @@ private fun AssistantMemoryContent(
 
             IconButton(
                 onClick = {
-                    memoryDialogState.open(AssistantMemory(0, ""))
+                    if (canEditMemory) memoryDialogState.open(AssistantMemory(0, "")) else onRequestEdit()
                 },
                 modifier = Modifier.align(Alignment.CenterEnd)
             ) {
@@ -310,10 +334,10 @@ private fun AssistantMemoryContent(
                 MemoryItem(
                     memory = memory,
                     onEditMemory = {
-                        memoryDialogState.open(it)
+                        if (canEditMemory) memoryDialogState.open(it) else onRequestEdit()
                     },
                     onDeleteMemory = {
-                        pendingDeleteMemory = it
+                        if (canEditMemory) pendingDeleteMemory = it else onRequestEdit()
                     }
                 )
             }
@@ -326,8 +350,12 @@ private fun AssistantMemoryContent(
         confirmText = stringResource(R.string.confirm),
         dismissText = stringResource(R.string.cancel),
         onConfirm = {
-            pendingDeleteMemory?.let(onDeleteMemory)
-            pendingDeleteMemory = null
+            if (canEditMemory) {
+                pendingDeleteMemory?.let(onDeleteMemory)
+                pendingDeleteMemory = null
+            } else {
+                onRequestEdit()
+            }
         },
         onDismiss = { pendingDeleteMemory = null },
         text = {

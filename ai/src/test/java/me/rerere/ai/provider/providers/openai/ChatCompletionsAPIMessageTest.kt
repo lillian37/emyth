@@ -18,6 +18,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -354,6 +355,103 @@ class ChatCompletionsAPIMessageTest {
         assertEquals("assistant", result[1].jsonObject["role"]?.jsonPrimitive?.content)
         assertEquals("thinking", result[1].jsonObject["reasoning_content"]?.jsonPrimitive?.content)
         assertEquals("", result[1].jsonObject["content"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `merged normal and hidden PASS turns retain every reasoning block`() {
+        val normal = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Reasoning(reasoning = "Earlier reasoning"),
+                UIMessagePart.Text("Earlier reply"),
+            ),
+        )
+        val hiddenPass = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Reasoning(reasoning = "Reasoning from the skipped wake"),
+                UIMessagePart.Text("[PASS]"),
+            ),
+            hideFromChat = true,
+        )
+        // prepareProactiveMessages merges neighbouring assistant parts in this same order.
+        val merged = normal.copy(parts = normal.parts + hiddenPass.parts)
+
+        val assistant = invokeBuildMessages(listOf(UIMessage.user("Earlier question"), merged))[1].jsonObject
+
+        assertEquals(
+            "Earlier reasoning\n\nReasoning from the skipped wake",
+            assistant["reasoning_content"]?.jsonPrimitive?.content,
+        )
+        assertEquals(listOf("Earlier reply", "[PASS]"), assistant["content"]?.jsonArray?.map {
+            it.jsonObject["text"]?.jsonPrimitive?.content
+        })
+    }
+
+    @Test
+    fun `all reasoning within each tool round is retained without crossing the tool boundary`() {
+        val hiddenPass = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Reasoning(reasoning = "Before tool one"),
+                UIMessagePart.Reasoning(reasoning = "Before tool two"),
+                createExecutedTool("wake_tool", "read_context", "{}", "Current context"),
+                UIMessagePart.Reasoning(reasoning = "After tool one"),
+                UIMessagePart.Reasoning(reasoning = "After tool two"),
+                UIMessagePart.Text("[PASS]"),
+            ),
+            hideFromChat = true,
+        )
+
+        val result = invokeBuildMessages(listOf(UIMessage.user("Wake event"), hiddenPass))
+
+        assertEquals(listOf("user", "assistant", "tool", "assistant"), result.map {
+            it.jsonObject["role"]?.jsonPrimitive?.content
+        })
+        assertEquals(
+            "Before tool one\n\nBefore tool two",
+            result[1].jsonObject["reasoning_content"]?.jsonPrimitive?.content,
+        )
+        assertEquals("wake_tool", result[2].jsonObject["tool_call_id"]?.jsonPrimitive?.content)
+        assertEquals(
+            "After tool one\n\nAfter tool two",
+            result[3].jsonObject["reasoning_content"]?.jsonPrimitive?.content,
+        )
+        assertEquals("[PASS]", result[3].jsonObject["content"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `a hidden PASS remains in uploaded history without serializing application visibility`() {
+        val pass = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(UIMessagePart.Text("[PASS]")),
+            hideFromChat = true,
+        )
+
+        val result = invokeBuildMessages(listOf(UIMessage.user("Wake event"), pass, UIMessage.user("Next event")))
+
+        assertEquals(3, result.size)
+        assertEquals("[PASS]", result[1].jsonObject["content"]?.jsonPrimitive?.content)
+        assertFalse(result[1].jsonObject.containsKey("hideFromChat"))
+        assertFalse(result[1].jsonObject.containsKey("hide_from_chat"))
+    }
+
+    @Test
+    fun `an empty reasoning block does not discard later hidden PASS reasoning`() {
+        val pass = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Reasoning(reasoning = ""),
+                UIMessagePart.Reasoning(reasoning = "Kept without trimming\n"),
+                UIMessagePart.Text("[PASS]"),
+            ),
+            hideFromChat = true,
+        )
+
+        val assistant = invokeBuildMessages(listOf(UIMessage.user("Wake event"), pass))[1].jsonObject
+
+        assertEquals("Kept without trimming\n", assistant["reasoning_content"]?.jsonPrimitive?.content)
+        assertEquals("[PASS]", assistant["content"]?.jsonPrimitive?.content)
     }
 
     // ==================== Helper Functions ====================

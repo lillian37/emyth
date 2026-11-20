@@ -39,6 +39,8 @@ import dev.emyth.app.data.service.DailySummaryService
 import dev.emyth.app.data.service.DeviceEventAiTriggerService
 import dev.emyth.app.data.service.DeviceEventTrackingService
 import dev.emyth.app.data.service.ProactiveMessageService
+import dev.emyth.app.data.service.ProactiveExecutionStore
+import dev.emyth.app.data.editprotection.startEditProtectionDispatch
 import dev.emyth.app.data.service.ScheduledWakeScheduler
 import dev.emyth.app.data.service.SupabaseSyncService
 import dev.emyth.app.service.ChatService
@@ -78,6 +80,8 @@ class EmythApp : Application() {
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule, pluginModule)
         }
         this.createNotificationChannel()
+        // Application initialization finishes before this process receives service/receiver callbacks.
+        ProactiveExecutionStore.recoverAfterProcessStart(this)
 
         // 预热 ChatService 单例: 强制在主线程(Application.onCreate 由 Android 保证
         // 在主线程执行, 且先于同一进程内任何 Service/BroadcastReceiver/Activity 回调)
@@ -93,6 +97,7 @@ class EmythApp : Application() {
         runCatching { get<ChatService>() }.onFailure { e ->
             android.util.Log.e(TAG, "Failed to pre-warm ChatService singleton", e)
         }
+        startEditProtectionDispatch(this, get<AppScope>())
 
         // set cursor window size to 32MB
         DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)
@@ -190,10 +195,8 @@ class EmythApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val settings = get<SettingsStore>().settingsFlowRaw.first()
-                if (settings.proactiveMessageSetting.enabled) {
-                    ProactiveMessageService.scheduleNext(this@EmythApp, settings.proactiveMessageSetting)
-                    Log.i(TAG, "Rescheduled proactive message alarm on app start")
-                }
+                ProactiveMessageService.restore(this@EmythApp, settings.proactiveMessageSetting)
+                Log.i(TAG, "Restored proactive message schedule without resetting its deadline")
             }.onFailure {
                 Log.e(TAG, "rescheduleProactiveMessageIfEnabled failed", it)
             }
@@ -374,3 +377,4 @@ class AppScope : CoroutineScope by CoroutineScope(
         Log.e(TAG, "AppScope exception", e)
     }
 )
+

@@ -8,6 +8,7 @@ package dev.emyth.app.ui.pages.chat
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,6 +19,8 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +34,7 @@ import me.rerere.ai.ui.isEmptyInputMessage
 import dev.emyth.app.R
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.editprotection.ProtectedEditDeniedException
 import dev.emyth.app.data.datastore.getCurrentChatModel
 import dev.emyth.app.data.files.FilesManager
 import dev.emyth.app.data.model.Assistant
@@ -64,6 +68,12 @@ class ChatVM(
     private val _conversationId: Uuid = Uuid.parse(id)
     val conversation: StateFlow<Conversation> = chatService.getConversationFlow(_conversationId)
     var chatListInitialized by mutableStateOf(false) // 聊天列表是否已经滚动到底部
+    var editProtectionError by mutableStateOf<String?>(null)
+        private set
+
+    fun dismissEditProtectionError() {
+        editProtectionError = null
+    }
 
     // 聊天输入状态 - 保存在 ViewModel 中避免 TransactionTooLargeException
     val inputState = ChatInputState()
@@ -131,10 +141,19 @@ class ChatVM(
     // 更新设置
     fun updateSettings(newSettings: Settings) {
         viewModelScope.launch {
-            val oldSettings = settings.value
-            // 检查用户头像是否有变化，如果有则删除旧头像
-            checkUserAvatarDelete(oldSettings, newSettings)
-            settingsStore.update(newSettings)
+            try {
+                val oldSettings = settings.value
+                settingsStore.update(newSettings)
+                runCatching { checkUserAvatarDelete(oldSettings, newSettings) }
+                    .onFailure { Log.w(TAG, "Settings saved; old avatar cleanup failed", it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ProtectedEditDeniedException) {
+                editProtectionError = e.message ?: "修改已被拦截，请先获得助手授权。"
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to save settings", e)
+                editProtectionError = "设置未能保存，请稍后重试。"
+            }
         }
     }
 
@@ -265,7 +284,16 @@ class ChatVM(
 
     fun deleteConversation(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.deleteConversation(conversation)
+            try {
+                conversationRepo.deleteConversation(conversation)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ProtectedEditDeniedException) {
+                editProtectionError = e.message ?: "会话删除已被拦截，请先获得助手授权。"
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to delete conversation", e)
+                editProtectionError = "会话未能删除，请稍后重试。"
+            }
         }
     }
 
@@ -277,17 +305,36 @@ class ChatVM(
 
     fun moveConversationToAssistant(conversation: Conversation, targetAssistantId: Uuid) {
         viewModelScope.launch {
-            val conversationFull = conversationRepo.getConversationById(conversation.id) ?: return@launch
-            // 文件夹是助手内分组，切换助手后原文件夹在新助手下不可见，需清空归属避免会话丢失
-            val updatedConversation = conversationFull.copy(
-                assistantId = targetAssistantId,
-                folderId = null,
-            )
-            if (conversation.id == _conversationId) {
-                chatService.saveConversation(_conversationId, updatedConversation)
-                settingsStore.updateAssistant(targetAssistantId)
-            } else {
-                conversationRepo.updateConversation(updatedConversation)
+            try {
+                // Folder membership belongs to an assistant and must be cleared after a move.
+                if (conversation.id == _conversationId) {
+                    val session = chatService.getOrCreateSession(_conversationId)
+                    session.saveMutex.withLock {
+                        val current = chatService.getConversationFlow(_conversationId).value
+                        val updated = current.copy(assistantId = targetAssistantId, folderId = null)
+                        if (conversationRepo.existsConversationById(_conversationId)) {
+                            conversationRepo.updateConversation(updated)
+                        } else {
+                            conversationRepo.insertConversation(updated)
+                        }
+                        chatService.updateConversationState(_conversationId) {
+                            it.copy(assistantId = targetAssistantId, folderId = null)
+                        }
+                    }
+                    settingsStore.updateAssistant(targetAssistantId)
+                } else {
+                    val current = conversationRepo.getConversationById(conversation.id) ?: return@launch
+                    conversationRepo.updateConversation(
+                        current.copy(assistantId = targetAssistantId, folderId = null)
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ProtectedEditDeniedException) {
+                editProtectionError = e.message ?: "会话移动已被拦截，请先获得助手授权。"
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to move conversation", e)
+                editProtectionError = "会话未能完成移动，请检查当前归属后重试。"
             }
         }
     }
@@ -316,6 +363,35 @@ class ChatVM(
     fun updateConversation(newConversation: Conversation) {
         chatService.updateConversationState(_conversationId) {
             newConversation
+        }
+    }
+
+    /** Commit the protected prompt before exposing it to the in-memory model context. */
+    fun updateConversationSystemPrompt(prompt: String?) {
+        viewModelScope.launch {
+            try {
+                val session = chatService.getOrCreateSession(_conversationId)
+                session.saveMutex.withLock {
+                    val current = chatService.getConversationFlow(_conversationId).value
+                    if (current.customSystemPrompt == prompt) return@withLock
+                    val updated = current.copy(customSystemPrompt = prompt)
+                    if (conversationRepo.existsConversationById(_conversationId)) {
+                        conversationRepo.updateConversation(updated)
+                    } else {
+                        conversationRepo.insertConversation(updated)
+                    }
+                    chatService.updateConversationState(_conversationId) {
+                        it.copy(customSystemPrompt = prompt)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ProtectedEditDeniedException) {
+                editProtectionError = e.message ?: "会话提示词修改已被拦截，请先获得助手授权。"
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to save conversation prompt", e)
+                editProtectionError = "会话提示词未能保存，请稍后重试。"
+            }
         }
     }
 

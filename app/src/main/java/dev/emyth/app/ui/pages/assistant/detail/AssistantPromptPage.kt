@@ -48,9 +48,12 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -78,6 +81,7 @@ import dev.emyth.app.data.ai.transformers.DefaultPlaceholderProvider
 import dev.emyth.app.data.ai.transformers.TemplateTransformer
 import dev.emyth.app.data.ai.transformers.TransformerContext
 import dev.emyth.app.data.datastore.Settings
+import dev.emyth.app.data.editprotection.ProtectedEditScope
 import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.data.model.AssistantAffectScope
 import dev.emyth.app.data.model.AssistantRegex
@@ -86,6 +90,7 @@ import dev.emyth.app.data.model.toMessageNode
 import dev.emyth.app.ui.components.message.ChatMessage
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.FormItem
+import dev.emyth.app.ui.components.ui.EditProtectionFeedback
 import dev.emyth.app.ui.components.ui.Select
 import dev.emyth.app.ui.components.ui.Tag
 import dev.emyth.app.ui.components.ui.TextArea
@@ -108,7 +113,10 @@ fun AssistantPromptPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val editError by vm.editError.collectAsStateWithLifecycle()
+    EditProtectionFeedback(editError, vm::dismissEditError)
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val protection = rememberEditProtectionStatus(id)
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -131,6 +139,9 @@ fun AssistantPromptPage(id: String) {
             modifier = Modifier.padding(innerPadding),
             assistant = assistant,
             settings = settings,
+            assistantId = id,
+            protectionEnabled = protection.enabled,
+            canEditPrompt = protection.editingAllowed,
             onUpdate = { vm.update(it) }
         )
     }
@@ -141,6 +152,9 @@ private fun AssistantPromptContent(
     modifier: Modifier = Modifier,
     assistant: Assistant,
     settings: Settings,
+    assistantId: String,
+    protectionEnabled: Boolean,
+    canEditPrompt: Boolean,
     onUpdate: (Assistant) -> Unit
 ) {
     val context = LocalContext.current
@@ -161,43 +175,85 @@ private fun AssistantPromptContent(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val systemPromptValue = rememberTextFieldState(
-                    initialText = assistant.systemPrompt,
-                )
-                LaunchedEffect(Unit) {
-                    snapshotFlow { systemPromptValue.text }.collect {
-                        onUpdate(
-                            assistant.copy(
-                                systemPrompt = it.toString()
-                            )
-                        )
-                    }
-                }
-
-                TextArea(
-                    state = systemPromptValue,
-                    label = stringResource(R.string.assistant_page_system_prompt),
-                    minLines = 5,
-                    maxLines = 10
-                )
-
-                Column {
-                    Text(
-                        text = stringResource(R.string.assistant_page_available_variables),
-                        style = MaterialTheme.typography.labelSmall
+                key(assistant.id) {
+                    val systemPromptValue = rememberTextFieldState(
+                        initialText = assistant.systemPrompt,
                     )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        DefaultPlaceholderProvider.placeholders.forEach { (k, info) ->
-                            Tag(
-                                onClick = {
-                                    systemPromptValue.insertAtCursor("{{$k}}")
+                    var draftBase by rememberSaveable { mutableStateOf(assistant.systemPrompt) }
+                    val currentAssistant by rememberUpdatedState(assistant)
+                    val currentUpdate by rememberUpdatedState(onUpdate)
+                    LaunchedEffect(assistant.systemPrompt) {
+                        if (systemPromptValue.text.toString() == draftBase) {
+                            systemPromptValue.edit {
+                                replace(0, length, assistant.systemPrompt)
+                            }
+                        }
+                        draftBase = assistant.systemPrompt
+                    }
+                    LaunchedEffect(assistant.id, protectionEnabled) {
+                        if (!protectionEnabled) {
+                            snapshotFlow { systemPromptValue.text.toString() }.collect { text ->
+                                if (text != currentAssistant.systemPrompt) {
+                                    currentUpdate(currentAssistant.copy(systemPrompt = text))
                                 }
+                            }
+                        }
+                    }
+
+                    EditProtectionNotice(assistantId, ProtectedEditScope.ASSISTANT_PROMPT)
+                    if (!canEditPrompt) {
+                        OutlinedTextField(
+                            value = systemPromptValue.text.toString(),
+                            onValueChange = {},
+                            modifier = Modifier.fillMaxWidth(),
+                            readOnly = true,
+                            label = { Text(stringResource(R.string.assistant_page_system_prompt)) },
+                            minLines = 5,
+                            maxLines = 10,
+                        )
+                        if (systemPromptValue.text.toString() != assistant.systemPrompt) {
+                            Text(
+                                text = "未保存的草稿已保留，重新获得权限后可继续保存。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    } else {
+                        TextArea(
+                            state = systemPromptValue,
+                            label = stringResource(R.string.assistant_page_system_prompt),
+                            minLines = 5,
+                            maxLines = 10
+                        )
+
+                        Column {
+                            Text(
+                                text = stringResource(R.string.assistant_page_available_variables),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
-                                info.displayName()
-                                Text(": {{$k}}")
+                                DefaultPlaceholderProvider.placeholders.forEach { (k, info) ->
+                                    Tag(
+                                        onClick = {
+                                            systemPromptValue.insertAtCursor("{{$k}}")
+                                        }
+                                    ) {
+                                        info.displayName()
+                                        Text(": {{$k}}")
+                                    }
+                                }
+                            }
+                        }
+                        if (protectionEnabled) {
+                            Button(
+                                onClick = {
+                                    onUpdate(assistant.copy(systemPrompt = systemPromptValue.text.toString()))
+                                },
+                                enabled = systemPromptValue.text.toString() != assistant.systemPrompt,
+                            ) {
+                                Text("保存人设")
                             }
                         }
                     }

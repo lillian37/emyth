@@ -74,9 +74,12 @@ class SearchVM(
         }
         isLoading = true
         try {
-            results = conversationRepo.searchMessages(query)
+            val visibleResults = conversationRepo.searchVisibleMessages(query)
+            // A newer query can replace this request while its database read is in flight.
+            if (_searchQuery.value == query) results = visibleResults
         } finally {
             isLoading = false
         }
     }
 }
+

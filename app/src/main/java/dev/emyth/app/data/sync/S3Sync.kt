@@ -17,6 +17,7 @@ import dev.emyth.app.data.files.SkillPaths
 import dev.emyth.app.data.datastore.Settings
 import dev.emyth.app.data.datastore.SettingsStore
 import dev.emyth.app.data.datastore.migration.SettingsJsonMigrator
+import dev.emyth.app.data.editprotection.EditProtectionStore
 import dev.emyth.app.data.sync.s3.S3Client
 import dev.emyth.app.data.sync.s3.S3Config
 import dev.emyth.app.utils.fileSizeToString
@@ -87,6 +88,7 @@ class S3Sync(
     }
 
     suspend fun restoreFromS3(config: S3Config, item: S3BackupItem) = withContext(Dispatchers.IO) {
+        EditProtectionStore.get(context).ensureBackupRestoreAllowed()
         val client = getS3Client(config)
         val backupFile = File(context.cacheDir, item.displayName)
 
@@ -185,12 +187,17 @@ class S3Sync(
     }
 
     private suspend fun restoreFromBackupFile(backupFile: File, config: S3Config) = withContext(Dispatchers.IO) {
+        // Archive database replacement bypasses repositories, so check the separate local protection state.
+        val editProtection = EditProtectionStore.get(context)
+        editProtection.ensureBackupRestoreAllowed()
         Log.i(TAG, "restoreFromBackupFile: Starting restore from ${backupFile.absolutePath}")
 
         ZipInputStream(FileInputStream(backupFile)).use { zipIn ->
             var entry: ZipEntry?
             while (zipIn.nextEntry.also { entry = it } != null) {
                 entry?.let { zipEntry ->
+                    // Protection may have been enabled while downloading or restoring an earlier entry.
+                    editProtection.ensureBackupRestoreAllowed()
                     Log.i(TAG, "restoreFromBackupFile: Processing entry ${zipEntry.name}")
 
                     when (zipEntry.name) {

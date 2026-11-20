@@ -1659,17 +1659,20 @@ addAll(localTools.getTools(assistant.localTools, dev.emyth.app.data.ai.tools.Too
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
         val exists = conversationRepo.existsConversationById(conversation.id)
-        if (!exists && conversation.title.isBlank() && conversation.messageNodes.isEmpty()) {
+        if (!exists && conversation.title.isBlank() && conversation.messageNodes.isEmpty() &&
+            conversation.customSystemPrompt.isNullOrEmpty()
+        ) {
             return // 新会话且为空时不保存
         }
 
         val updatedConversation = conversation.copy()
-        updateConversation(conversationId, updatedConversation)
-
+        // The repository selects publication order under its actual mutation lock: ordinary stream
+        // checkpoints keep their existing order; protected edits publish only after persistence succeeds.
+        val publishState = { updateConversation(conversationId, updatedConversation) }
         if (!exists) {
-            conversationRepo.insertConversation(updatedConversation)
+            conversationRepo.insertConversation(updatedConversation, onStateReady = publishState)
         } else {
-            conversationRepo.updateConversation(updatedConversation)
+            conversationRepo.updateConversation(updatedConversation, onStateReady = publishState)
         }
     }
 
@@ -2018,3 +2021,4 @@ addAll(localTools.getTools(assistant.localTools, dev.emyth.app.data.ai.tools.Too
         return null
     }
 }
+

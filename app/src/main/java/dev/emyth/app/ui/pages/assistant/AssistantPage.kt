@@ -71,6 +71,7 @@ import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.data.model.AssistantMemory
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.FormItem
+import dev.emyth.app.ui.components.ui.EditProtectionFeedback
 import dev.emyth.app.ui.components.ui.Tag
 import dev.emyth.app.ui.components.ui.TagType
 import dev.emyth.app.ui.components.ui.UIAvatar
@@ -91,6 +92,8 @@ import androidx.compose.foundation.lazy.items as lazyItems
 @Composable
 fun AssistantPage(vm: AssistantVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val editError by vm.editError.collectAsStateWithLifecycle()
+    EditProtectionFeedback(editError, vm::dismissEditError)
     val createState = useEditState<Assistant> {
         vm.addAssistant(it)
     }

@@ -6,13 +6,32 @@
 
 package dev.emyth.app.data.repository
 
+import android.content.Context
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import dev.emyth.app.data.db.dao.MemoryDAO
 import dev.emyth.app.data.db.entity.MemoryEntity
+import dev.emyth.app.data.datastore.SettingsStore
+import dev.emyth.app.data.editprotection.EditActor
+import dev.emyth.app.data.editprotection.EditProtectionStore
+import dev.emyth.app.data.editprotection.ProtectedEditChange
+import dev.emyth.app.data.editprotection.ProtectedEditScope
+import dev.emyth.app.data.editprotection.protectedTextDifference
+import dev.emyth.app.data.editprotection.builtinMemoryEditTargets
+import dev.emyth.app.data.editprotection.requireAssistantMemoryOwner
 import dev.emyth.app.data.model.AssistantMemory
 
-class MemoryRepository(private val memoryDAO: MemoryDAO) {
+class MemoryRepository(
+    private val memoryDAO: MemoryDAO,
+    private val settingsStore: SettingsStore,
+    context: Context,
+) {
+    private val editProtection = EditProtectionStore.get(context)
+    private val mutationMutex = Mutex()
+
     companion object {
         const val GLOBAL_MEMORY_ID = "__global__"
     }
@@ -49,39 +68,116 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
             content.startsWith("[auto_summary]")
     }
 
-    suspend fun deleteMemoriesOfAssistant(assistantId: String) {
-        memoryDAO.deleteMemoriesOfAssistant(assistantId)
+    suspend fun deleteMemoriesOfAssistant(assistantId: String) = mutationMutex.withLock {
+        val existing = memoryDAO.getMemoriesOfAssistant(assistantId)
+        if (existing.isEmpty()) return@withLock
+        val summary = protectedTextDifference(
+            "删除 ${existing.size} 条内置记忆",
+            existing.take(3).joinToString("\n") { "#${it.id}: ${it.content}" },
+            null,
+        )
+        protectedHumanMutation(assistantId, summary) {
+            memoryDAO.deleteMemoriesOfAssistant(assistantId)
+        }
     }
 
-    suspend fun updateContent(id: Int, content: String): AssistantMemory {
+    suspend fun updateContent(id: Int, content: String): AssistantMemory = mutationMutex.withLock {
         val old = memoryDAO.getMemoryById(id) ?: error("Memory record #$id not found")
-        val newMemory = old.copy(
-            content = content
-        )
-        memoryDAO.updateMemory(newMemory)
-        return AssistantMemory(
-            id = newMemory.id,
-            content = newMemory.content,
-        )
+        if (old.content == content) return@withLock AssistantMemory(old.id, old.content)
+        protectedHumanMutation(
+            old.assistantId, protectedTextDifference("修改内置记忆 #$id", old.content, content),
+        ) { update(old, content) }
     }
 
-    suspend fun addMemory(assistantId: String, content: String): AssistantMemory {
-        val memory = AssistantMemory(
-            id = 0,
-            content = content,
-        )
-        val newMemory = memory.copy(
-            id = memoryDAO.insertMemory(
-                MemoryEntity(
-                    assistantId = assistantId,
-                    content = memory.content
-                )
-            ).toInt()
-        )
-        return newMemory
+    suspend fun addMemory(assistantId: String, content: String): AssistantMemory = mutationMutex.withLock {
+        protectedHumanMutation(
+            assistantId, protectedTextDifference("新增内置记忆", null, content),
+        ) { insert(assistantId, content) }
     }
 
-    suspend fun deleteMemory(id: Int) {
-        memoryDAO.deleteMemory(id)
+    suspend fun deleteMemory(id: Int) = mutationMutex.withLock {
+        val old = memoryDAO.getMemoryById(id) ?: return@withLock
+        protectedHumanMutation(
+            old.assistantId, protectedTextDifference("删除内置记忆 #$id", old.content, null),
+        ) { memoryDAO.deleteMemory(id) }
+    }
+
+    /** Bound by the real model invocation, never by a tool JSON origin or a supplied record owner. */
+    suspend fun addMemoryFromAssistant(actorId: String, expectedOwner: String, content: String): AssistantMemory =
+        mutationMutex.withLock {
+            requireAssistantScope(actorId, expectedOwner)
+            editProtection.mutate(assistantChanges(actorId), EditActor.Assistant(actorId)) {
+                requireAssistantScope(actorId, expectedOwner)
+                insert(expectedOwner, content)
+            }
+        }
+
+    suspend fun updateContentFromAssistant(
+        actorId: String,
+        expectedOwner: String,
+        id: Int,
+        content: String,
+    ): AssistantMemory = mutationMutex.withLock {
+        requireAssistantScope(actorId, expectedOwner)
+        val old = memoryDAO.getMemoryById(id) ?: error("Memory record #$id not found")
+        requireAssistantScope(actorId, expectedOwner, old.assistantId)
+        if (old.content == content) return@withLock AssistantMemory(old.id, old.content)
+        editProtection.mutate(assistantChanges(actorId), EditActor.Assistant(actorId)) {
+            requireAssistantScope(actorId, expectedOwner, old.assistantId)
+            update(old, content)
+        }
+    }
+
+    suspend fun deleteMemoryFromAssistant(actorId: String, expectedOwner: String, id: Int) = mutationMutex.withLock {
+        requireAssistantScope(actorId, expectedOwner)
+        val old = memoryDAO.getMemoryById(id) ?: return@withLock
+        requireAssistantScope(actorId, expectedOwner, old.assistantId)
+        editProtection.mutate(assistantChanges(actorId), EditActor.Assistant(actorId)) {
+            requireAssistantScope(actorId, expectedOwner, old.assistantId)
+            memoryDAO.deleteMemory(id)
+        }
+    }
+
+    private suspend fun <T> protectedHumanMutation(owner: String, summary: String, block: suspend () -> T): T {
+        val changes = humanChanges(owner, summary)
+        return editProtection.mutate(changes) {
+            // A scope switch may have finished while this operation waited for the permission lock.
+            val checkedTargets = changes.mapTo(mutableSetOf()) { it.assistantId }
+            check(humanChanges(owner, summary).all { it.assistantId in checkedTargets }) {
+                "共享记忆的所属范围已改变，请重新保存；本次未修改内容"
+            }
+            block()
+        }
+    }
+
+    private suspend fun humanChanges(owner: String, summary: String): List<ProtectedEditChange> {
+        val targets = builtinMemoryEditTargets(owner, settingsStore.settingsFlowRaw.first().assistants)
+        return targets.distinct().map {
+            ProtectedEditChange(it, ProtectedEditScope.BUILTIN_MEMORY, summary = summary)
+        }
+    }
+
+    private fun assistantChanges(actorId: String) = listOf(
+        ProtectedEditChange(actorId, ProtectedEditScope.BUILTIN_MEMORY)
+    )
+
+    private suspend fun requireAssistantScope(
+        actorId: String,
+        expectedOwner: String,
+        actualRecordOwner: String? = null,
+    ) {
+        val assistant = settingsStore.settingsFlowRaw.first().assistants.find { it.id.toString() == actorId }
+        requireAssistantMemoryOwner(assistant, actorId, expectedOwner, actualRecordOwner)
+    }
+
+    private suspend fun insert(owner: String, content: String): AssistantMemory = AssistantMemory(
+        id = memoryDAO.insertMemory(MemoryEntity(assistantId = owner, content = content)).toInt(),
+        content = content,
+    )
+
+    private suspend fun update(old: MemoryEntity, content: String): AssistantMemory {
+        memoryDAO.updateMemory(old.copy(content = content))
+        return AssistantMemory(old.id, content)
     }
 }
+

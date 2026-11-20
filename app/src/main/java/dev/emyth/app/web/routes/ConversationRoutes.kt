@@ -115,7 +115,7 @@ fun Route.conversationRoutes(
                 call.respond(emptyList<MessageSearchResultDto>())
                 return@get
             }
-            val results = conversationRepo.searchMessages(query)
+            val results = conversationRepo.searchVisibleMessages(query)
             call.respond(results.map { result ->
                 MessageSearchResultDto(
                     nodeId = result.nodeId,
@@ -418,3 +418,4 @@ private sealed interface ConversationStreamPayload {
     data class Conversation(val value: ConversationDto) : ConversationStreamPayload
     data class BatchErrors(val messages: List<String>) : ConversationStreamPayload
 }
+

@@ -43,6 +43,7 @@ import dev.emyth.app.Screen
 import dev.emyth.app.data.model.Assistant
 import dev.emyth.app.ui.components.nav.BackButton
 import dev.emyth.app.ui.components.ui.CardGroup
+import dev.emyth.app.ui.components.ui.EditProtectionFeedback
 import dev.emyth.app.ui.components.ui.UIAvatar
 import dev.emyth.app.ui.context.LocalNavController
 import dev.emyth.app.ui.hooks.heroAnimation
@@ -59,6 +60,8 @@ fun AssistantDetailPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val editError by vm.editError.collectAsStateWithLifecycle()
+    EditProtectionFeedback(editError, vm::dismissEditError)
     val navController = LocalNavController.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -92,6 +95,13 @@ fun AssistantDetailPage(id: String) {
                 AssistantHeader(
                     assistant = assistant,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 16.dp)
+                )
+            }
+
+            item {
+                AssistantEditProtectionCard(
+                    assistantId = id,
+                    modifier = Modifier.padding(horizontal = 8.dp),
                 )
             }
 

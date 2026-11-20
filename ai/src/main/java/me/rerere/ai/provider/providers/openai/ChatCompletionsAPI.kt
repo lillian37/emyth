@@ -606,16 +606,18 @@ class ChatCompletionsAPI(
     private fun JsonArrayBuilder.addAssistantMessages(message: UIMessage, includeReasoning: Boolean, supportsImage: Boolean = true) {
         val groups = groupPartsByToolBoundary(message.parts)
         val contentBuffer = mutableListOf<UIMessagePart>()
-        var reasoningPart: UIMessagePart.Reasoning? = null
+        var reasoningContent: String? = null
 
         for (group in groups) {
             when (group) {
                 is PartGroup.Content -> {
-                    // 从当前 group 中提取 reasoning（保持顺序）
+                    // Merged assistant turns can contain several reasoning blocks in one content group.
                     if (includeReasoning) {
-                        group.parts.filterIsInstance<UIMessagePart.Reasoning>().firstOrNull()?.let {
-                            reasoningPart = it
-                        }
+                        reasoningContent = group.parts.filterIsInstance<UIMessagePart.Reasoning>()
+                            .map { it.reasoning }
+                            .filter { it.isNotEmpty() }
+                            .joinToString("\n\n")
+                            .takeIf { it.isNotEmpty() }
                     }
                     group.parts
                         .filter { it is UIMessagePart.Text || (supportsImage && it is UIMessagePart.Image) }
@@ -627,13 +629,13 @@ class ChatCompletionsAPI(
                     buildAssistantMessageJson(
                         contentParts = contentBuffer,
                         tools = group.tools,
-                        reasoningPart = reasoningPart,
+                        reasoningContent = reasoningContent,
                         supportsImage = supportsImage,
                     )?.let { assistantMessage ->
                         add(assistantMessage)
                     }
                     contentBuffer.clear()
-                    reasoningPart = null // 清空，下一个 group 可能有新的 reasoning
+                    reasoningContent = null // 下一个工具轮次的思考不能混入本轮。
 
                     // 紧跟 tool 结果消息
                     group.tools.forEach { tool ->
@@ -679,11 +681,11 @@ class ChatCompletionsAPI(
         }
 
         // 输出剩余内容
-        if (contentBuffer.isNotEmpty() || reasoningPart != null) {
+        if (contentBuffer.isNotEmpty() || reasoningContent != null) {
             buildAssistantMessageJson(
                 contentParts = contentBuffer,
                 tools = emptyList(),
-                reasoningPart = reasoningPart,
+                reasoningContent = reasoningContent,
                 supportsImage = supportsImage,
             )?.let { assistantMessage ->
                 add(assistantMessage)
@@ -694,7 +696,7 @@ class ChatCompletionsAPI(
     private fun buildAssistantMessageJson(
         contentParts: List<UIMessagePart>,
         tools: List<UIMessagePart.Tool>,
-        reasoningPart: UIMessagePart.Reasoning?,
+        reasoningContent: String?,
         supportsImage: Boolean = true,
     ): JsonObject? {
         val hasUsableContent = contentParts.any { part ->
@@ -704,7 +706,7 @@ class ChatCompletionsAPI(
                 else -> false
             }
         }
-        val hasReasoning = !reasoningPart?.reasoning.isNullOrBlank()
+        val hasReasoning = !reasoningContent.isNullOrBlank()
         if (!hasUsableContent && !hasReasoning && tools.isEmpty()) {
             return null
         }
@@ -714,7 +716,7 @@ class ChatCompletionsAPI(
 
             // reasoning_content
             if (hasReasoning) {
-                put("reasoning_content", reasoningPart.reasoning)
+                put("reasoning_content", reasoningContent)
             }
 
             // content

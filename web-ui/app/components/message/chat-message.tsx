@@ -30,6 +30,7 @@ import type {
 
 import { copyTextToClipboard } from "~/lib/clipboard";
 import { convertMessageToMarkdown, downloadMarkdown } from "~/lib/export-markdown";
+import { getVisibleBranchNavigation } from "~/lib/message-visibility";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import {
@@ -285,6 +286,7 @@ const ChatMessageActionsRow = React.memo(({
     async (selectIndex: number) => {
       if (!onSelectBranch) return;
       if (selectIndex < 0 || selectIndex > node.messages.length - 1) return;
+      if (node.messages[selectIndex]?.hideFromChat === true) return;
       if (selectIndex === node.selectIndex) return;
 
       setSwitchingBranch(true);
@@ -294,7 +296,7 @@ const ChatMessageActionsRow = React.memo(({
         setSwitchingBranch(false);
       }
     },
-    [node.id, node.messages.length, node.selectIndex, onSelectBranch],
+    [node.id, node.messages, node.selectIndex, onSelectBranch],
   );
 
   const handleDelete = React.useCallback(async () => {
@@ -322,7 +324,9 @@ const ChatMessageActionsRow = React.memo(({
     }
   }, [message.id, onFork]);
 
-  const canSwitchBranch = Boolean(onSelectBranch) && node.messages.length > 1;
+  const visibleBranches = getVisibleBranchNavigation(node);
+  const canSwitchBranch =
+    Boolean(onSelectBranch) && visibleBranches.count > 1 && visibleBranches.position >= 0;
   const canEdit =
     Boolean(onEdit) &&
     (message.role === "USER" || message.role === "ASSISTANT") &&
@@ -386,9 +390,11 @@ const ChatMessageActionsRow = React.memo(({
         <>
           <Button
             aria-label={t("chat_message.previous_branch")}
-            disabled={actionDisabled || node.selectIndex <= 0}
+            disabled={actionDisabled || visibleBranches.previousIndex === undefined}
             onClick={() => {
-              void handleSwitchBranch(node.selectIndex - 1);
+              if (visibleBranches.previousIndex !== undefined) {
+                void handleSwitchBranch(visibleBranches.previousIndex);
+              }
             }}
             size="icon-xs"
             title={t("chat_message.previous_branch")}
@@ -398,13 +404,15 @@ const ChatMessageActionsRow = React.memo(({
             <ChevronLeft className="size-3.5" />
           </Button>
           <span className="text-[11px] text-muted-foreground">
-            {node.selectIndex + 1}/{node.messages.length}
+            {visibleBranches.position + 1}/{visibleBranches.count}
           </span>
           <Button
             aria-label={t("chat_message.next_branch")}
-            disabled={actionDisabled || node.selectIndex >= node.messages.length - 1}
+            disabled={actionDisabled || visibleBranches.nextIndex === undefined}
             onClick={() => {
-              void handleSwitchBranch(node.selectIndex + 1);
+              if (visibleBranches.nextIndex !== undefined) {
+                void handleSwitchBranch(visibleBranches.nextIndex);
+              }
             }}
             size="icon-xs"
             title={t("chat_message.next_branch")}

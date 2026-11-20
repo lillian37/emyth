@@ -1,9 +1,11 @@
 import type { ConversationDto, MessageDto } from "~/types";
+import { getVisibleNodeMessages, isVisibleChatMessage } from "./message-visibility";
 
 export function convertMessageToMarkdown(
   message: MessageDto,
   includeReasoning: boolean,
 ): string {
+  if (!isVisibleChatMessage(message)) return "";
   const lines: string[] = [];
 
   for (const part of message.parts) {
@@ -39,9 +41,7 @@ export function convertConversationToMarkdown(
     lines.push("");
   }
 
-  for (const node of detail.messages) {
-    const message = node.messages[node.selectIndex] ?? node.messages[0];
-    if (!message) continue;
+  for (const { message } of getVisibleNodeMessages(detail.messages)) {
 
     const roleLabel =
       message.role === "USER"

@@ -35,26 +35,28 @@ fun ChatMessageBranchSelector(
     modifier: Modifier = Modifier,
     onUpdate: (MessageNode) -> Unit,
 ) {
+    val visibleIndices = remember(node.messages) { node.visibleChatBranchIndices() }
+    val visiblePosition = visibleIndices.indexOf(node.selectIndex)
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (node.messages.size > 1) {
+        if (visibleIndices.size > 1 && visiblePosition >= 0) {
             Icon(
                 imageVector = HugeIcons.ArrowLeft01,
                 contentDescription = "Prev",
                 modifier = Modifier
                     .clip(CircleShape)
-                    .alpha(if (node.selectIndex == 0) 0.5f else 1f)
+                    .alpha(if (visiblePosition == 0) 0.5f else 1f)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = LocalIndication.current,
                         onClick = {
-                            if (node.selectIndex > 0) {
+                            if (visiblePosition > 0) {
                                 onUpdate(
                                     node.copy(
-                                        selectIndex = node.selectIndex - 1
+                                        selectIndex = visibleIndices[visiblePosition - 1]
                                     )
                                 )
                             }
@@ -65,7 +67,7 @@ fun ChatMessageBranchSelector(
             )
 
             Text(
-                text = "${node.selectIndex + 1}/${node.messages.size}",
+                text = "${visiblePosition + 1}/${visibleIndices.size}",
                 style = MaterialTheme.typography.bodySmall
             )
 
@@ -74,15 +76,15 @@ fun ChatMessageBranchSelector(
                 contentDescription = "Next",
                 modifier = Modifier
                     .clip(CircleShape)
-                    .alpha(if (node.selectIndex == node.messages.lastIndex) 0.5f else 1f)
+                    .alpha(if (visiblePosition == visibleIndices.lastIndex) 0.5f else 1f)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = LocalIndication.current,
                         onClick = {
-                            if (node.selectIndex < node.messages.lastIndex) {
+                            if (visiblePosition < visibleIndices.lastIndex) {
                                 onUpdate(
                                     node.copy(
-                                        selectIndex = node.selectIndex + 1
+                                        selectIndex = visibleIndices[visiblePosition + 1]
                                     )
                                 )
                             }
